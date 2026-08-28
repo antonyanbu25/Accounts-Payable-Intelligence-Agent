@@ -1,0 +1,239 @@
+{
+  "_note": "Hand-computed answer key, written BEFORE the compute/RAG service is built (Day 1, per plan v4). Every figure here was derived by hand from the live seed data using the same GST_RATES/TDS_RATES tables in db/seed.py and the rules in tax_docs/. Once the FastAPI service exists, run eval/run_eval.py to compare its live output against these expected values.",
+  "tier1_cases": [
+    {
+      "id": "T1-partial-payment",
+      "question": "How much is pending for TechNova Software Solutions on invoice INV-9, and what tax applies?",
+      "invoice_id": 9,
+      "expected": {
+        "base_amount": 200000.00,
+        "gst_rate_pct": 12.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 12000.00, "sgst": 12000.00},
+        "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 20000.00,
+        "gross_liability": 224000.00,
+        "advances_applied": 0.00, "credits_applied": 0.00, "payments_made": 120000.00,
+        "net_disbursement_due": 84000.00,
+        "payment_eligibility": "eligible"
+      },
+      "why": "Software, post-22-Sep-2025 -> 12% GST. Vendor (Karnataka) and office (Karnataka) match -> intra-state CGST+SGST. One partial payment of 120000 already made. 224000 - 20000 (TDS) - 120000 (payment) = 84000."
+    },
+    {
+      "id": "T1-applied-advance",
+      "question": "What's the net payable to CodeCraft IT Services for invoice INV-10?",
+      "invoice_id": 10,
+      "expected": {
+        "base_amount": 150000.00,
+        "gst_rate_pct": 12.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 9000.00, "sgst": 9000.00},
+        "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 15000.00,
+        "gross_liability": 168000.00,
+        "advances_applied": 30000.00, "credits_applied": 0.00, "payments_made": 120000.00,
+        "net_disbursement_due": 3000.00,
+        "payment_eligibility": "eligible"
+      },
+      "why": "168000 - 15000 (TDS) - 30000 (advance) - 120000 (payment marked 'full' but does NOT zero the balance once TDS/advance are netted) = 3000. Deliberately surprising residual -- the payment's 'full' label is descriptive metadata, not something the compute layer should trust blindly."
+    },
+    {
+      "id": "T1-credit-note",
+      "question": "What's outstanding on Metro Furniture Traders' invoice INV-11, after the return?",
+      "invoice_id": 11,
+      "expected": {
+        "base_amount": 60000.00,
+        "gst_rate_pct": 18.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 5400.00, "sgst": 5400.00},
+        "tds_rate_pct": 0.0, "tds_section": null, "tds_amount": 0.00,
+        "gross_liability": 70800.00,
+        "advances_applied": 0.00, "credits_applied": 5000.00, "payments_made": 55000.00,
+        "net_disbursement_due": 10800.00,
+        "payment_eligibility": "eligible"
+      },
+      "why": "Furniture -> 18% GST, no TDS (goods, not a services/contract category). 70800 - 5000 (credit) - 55000 (payment) = 10800."
+    },
+    {
+      "id": "T1-tds-with-gst-igst",
+      "question": "How much is owed to Chennai Business Consultants for INV-12, and what's withheld?",
+      "invoice_id": 12,
+      "expected": {
+        "base_amount": 80000.00,
+        "gst_rate_pct": 18.0,
+        "gst_split": {"type": "IGST", "igst": 14400.00},
+        "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 8000.00,
+        "gross_liability": 94400.00,
+        "advances_applied": 0.00, "credits_applied": 0.00, "payments_made": 80000.00,
+        "net_disbursement_due": 6400.00,
+        "payment_eligibility": "eligible"
+      },
+      "why": "Vendor (Tamil Nadu) vs office (Karnataka) differ -> inter-state, IGST not CGST+SGST. Services -> 10% TDS u/s 194J on the 80000 base (excluding GST, per CBDT Circular 23/2017)."
+    },
+    {
+      "id": "T1-effective-date-pre",
+      "question": "What GST rate and net payable apply to Skyline Software Labs' invoice INV-13, dated 1 Sep 2025?",
+      "invoice_id": 13,
+      "expected": {
+        "base_amount": 100000.00,
+        "gst_rate_pct": 18.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 9000.00, "sgst": 9000.00},
+        "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 10000.00,
+        "gross_liability": 118000.00,
+        "advances_applied": 0.00, "credits_applied": 0.00, "payments_made": 0.00,
+        "net_disbursement_due": 108000.00,
+        "payment_eligibility": "eligible"
+      },
+      "why": "Invoice dated BEFORE 22-Sep-2025 -> must use the pre-reform 18% rate, not today's 12%. This is also adversarial case A2 (see below) -- same underlying test, viewed from two angles."
+    },
+    {
+      "id": "T1-effective-date-post",
+      "question": "What GST rate and net payable apply to Skyline Software Labs' invoice INV-14, dated 1 Oct 2025?",
+      "invoice_id": 14,
+      "expected": {
+        "base_amount": 100000.00,
+        "gst_rate_pct": 12.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 6000.00, "sgst": 6000.00},
+        "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 10000.00,
+        "gross_liability": 112000.00,
+        "advances_applied": 0.00, "credits_applied": 0.00, "payments_made": 0.00,
+        "net_disbursement_due": 102000.00,
+        "payment_eligibility": "eligible"
+      },
+      "why": "Same vendor, same amount as T1-effective-date-pre, only the date differs (after 22-Sep-2025) -- correct answer genuinely changes (108000 vs 102000) purely from date-anchoring."
+    },
+    {
+      "id": "T1-authority-conflict",
+      "question": "What tax applies to Prime Consulting Group's invoice INV-15?",
+      "invoice_id": 15,
+      "expected": {
+        "base_amount": 70000.00,
+        "gst_rate_pct": 18.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 6300.00, "sgst": 6300.00},
+        "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 7000.00,
+        "gross_liability": 82600.00,
+        "advances_applied": 0.00, "credits_applied": 0.00, "payments_made": 0.00,
+        "net_disbursement_due": 75600.00,
+        "payment_eligibility": "eligible",
+        "flagged_conflict": {
+          "field": "vendor_state",
+          "portal_value": "Karnataka",
+          "financial_db_value": "Maharashtra",
+          "authority_used": "Maharashtra (GSTIN, per financial DB) -- GSTIN is always authoritative for tax jurisdiction",
+          "portal_value_flagged_as": "data-quality note, not a blocker"
+        }
+      },
+      "why": "MUST use GSTIN-derived Maharashtra (matches office=Maharashtra -> intra-state CGST+SGST). If the system wrongly used the stale onboarding value (Karnataka), it would incorrectly conclude inter-state IGST -- a genuinely different, wrong number. This is the test that proves the authority rule is actually applied to computation, not just mentioned."
+    },
+    {
+      "id": "T1-no-rule-conflict",
+      "question": "What's the tax treatment for Skyline Software Labs' invoice INV-16?",
+      "invoice_id": 16,
+      "expected": {
+        "base_amount": 90000.00,
+        "pre_tax_ledger_position": 90000.00,
+        "gst_rate_pct": null, "gst_amount": null, "tds_amount": null,
+        "gross_liability": null, "net_disbursement_due": null,
+        "payment_eligibility": "on hold -- category unresolved",
+        "refused": true,
+        "candidates": [
+          {"category": "Software (SAC 998313, per PO)", "gst_rate_pct": 12.0, "gst_amount": 10800.00},
+          {"category": "Services (SAC 998311, per Invoice)", "gst_rate_pct": 18.0, "gst_amount": 16200.00}
+        ],
+        "note": "TDS would be 9000.00 (10% u/s 194J) under EITHER candidate category, but is still withheld -- category is treated as a single unresolved fact, not resolved selectively per downstream figure."
+      },
+      "why": "PO says Software, Invoice says Services -- no defensible rule decides which is correct (unlike the GSTIN case). Base amount (90000) is tax-independent and can still be stated. Everything tax-dependent is refused together, both candidate outcomes are named."
+    },
+    {
+      "id": "T1-vendor-stated-superseded-rate",
+      "question": "Is TechNova's invoice INV-17 correctly taxed?",
+      "invoice_id": 17,
+      "expected": {
+        "base_amount": 110000.00,
+        "vendor_stated_gst_rate_pct": 18.0, "vendor_stated_gst_amount": 19800.00,
+        "true_gst_rate_pct": 12.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 6600.00, "sgst": 6600.00},
+        "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 11000.00,
+        "true_gross_liability": 123200.00,
+        "advances_applied": 0.00, "credits_applied": 0.00, "payments_made": 0.00,
+        "true_net_disbursement_due": 112200.00,
+        "payment_eligibility": "eligible",
+        "flagged": "Vendor's own invoice states an 18% GST rate, which was superseded on 22-Sep-2025 (this invoice is dated 15-Nov-2025). The correct current rate per Notification CBIC-RATE/2025-Central Tax (Rate) 07/2025 is 12%. If paid as billed by the vendor, this would result in an overpayment of INR 6600 (19800 - 13200)."
+      },
+      "why": "Invoice dated AFTER the rate change, but gst_rate_stated=18 is the OLD rate -- the vendor's own bill is wrong, not just the accountant's advice. gst_rate_stated must never feed /compute -- it's evidence only."
+    },
+    {
+      "id": "T1-igst-split-demo",
+      "question": "What tax split applies to CodeCraft's invoice INV-18 (Chennai vendor, Bangalore office)?",
+      "invoice_id": 18,
+      "expected": {
+        "base_amount": 130000.00, "gst_rate_pct": 12.0,
+        "gst_split": {"type": "IGST", "igst": 15600.00},
+        "tds_amount": 13000.00, "gross_liability": 145600.00,
+        "net_disbursement_due": 132600.00, "payment_eligibility": "eligible"
+      },
+      "why": "Vendor Tamil Nadu, office Karnataka -> different states -> full IGST, no CGST/SGST split."
+    },
+    {
+      "id": "T1-cgst-sgst-split-demo",
+      "question": "What tax split applies to TechNova's invoice INV-19 (Bangalore vendor, Bangalore office)?",
+      "invoice_id": 19,
+      "expected": {
+        "base_amount": 130000.00, "gst_rate_pct": 12.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 7800.00, "sgst": 7800.00},
+        "tds_amount": 13000.00, "gross_liability": 145600.00,
+        "net_disbursement_due": 132600.00, "payment_eligibility": "eligible"
+      },
+      "why": "Same base amount, category, and total GST (15600) as T1-igst-split-demo -- only the split mechanism differs, isolating the place-of-supply rule as the sole variable for a clean side-by-side demo."
+    }
+  ],
+  "adversarial_cases": [
+    {
+      "id": "A1-nonexistent-vendor",
+      "question": "What's the outstanding balance for Zenith Global Traders?",
+      "expected": {"found": false, "response_type": "graceful not-found, no balance stated, no candidates fabricated"},
+      "why": "No vendor by this name (or close to it) exists in vendor_master -- tests that the system declines rather than guesses or hallucinates a plausible-sounding balance."
+    },
+    {
+      "id": "A2-pre-change-date",
+      "question": "What GST rate applied to software purchases on 1 September 2025?",
+      "reuses": "T1-effective-date-pre",
+      "expected": {"gst_rate_pct": 18.0},
+      "why": "Same case as T1-effective-date-pre, framed as the adversarial test it is: an ungrounded system tends to answer with 'today's' rate (12%) rather than the rate genuinely in force on the asked-about date."
+    },
+    {
+      "id": "A3-false-positive-check",
+      "question": "UC2 validation: accountant submits an advice for INV-1 (Bright Office Furnishings) claiming base=85000, category=Furniture, GST rate=18% (CGST 7650 + SGST 7650, total 15300), TDS=0, net payable=100300.",
+      "invoice_id": 1,
+      "submitted_advice": {
+        "base_amount": 85000.00, "category": "Furniture",
+        "gst_rate_pct": 18.0, "gst_cgst": 7650.00, "gst_sgst": 7650.00,
+        "tds_amount": 0.00, "net_payable_claimed": 100300.00
+      },
+      "expected_reconstruction": {
+        "base_amount": 85000.00, "gst_rate_pct": 18.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 7650.00, "sgst": 7650.00},
+        "tds_amount": 0.00, "gross_liability": 100300.00, "net_disbursement_due": 100300.00
+      },
+      "expected_verdict": "MATCH -- no divergence on any field. The agent must NOT invent a mismatch.",
+      "why": "The advice is genuinely, fully correct (vendor Maharashtra, office Maharashtra -> intra-state, matches the submitted CGST+SGST split). This is the single most important adversarial case -- a false accusation of error is a worse failure than a missed real one."
+    },
+    {
+      "id": "A4-multi-error-advice",
+      "question": "UC2 validation: accountant submits an advice for INV-4 (ElectroMax Appliances) claiming GST rate=12% (=7320) and TDS=10% (=6100), net payable=62220.",
+      "invoice_id": 4,
+      "submitted_advice": {
+        "base_amount": 61000.00, "category": "Appliances",
+        "gst_rate_pct": 12.0, "gst_amount": 7320.00,
+        "tds_rate_pct": 10.0, "tds_amount": 6100.00,
+        "net_payable_claimed": 62220.00
+      },
+      "expected_reconstruction": {
+        "base_amount": 61000.00, "gst_rate_pct": 18.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 5490.00, "sgst": 5490.00},
+        "tds_amount": 0.00, "gross_liability": 71980.00, "net_disbursement_due": 71980.00
+      },
+      "expected_verdict": "MISMATCH on 2 independent fields",
+      "expected_diff": [
+        {"field": "gst_rate_pct", "claimed": 12.0, "correct": 18.0, "reason": "Appliances (HSN 8516) is unaffected by the 2025 reform and stays at 18%; 12% is the Software post-reform rate -- looks like category confusion, not an Appliances rate."},
+        {"field": "tds_amount", "claimed": 6100.00, "correct": 0.00, "reason": "Appliances is a goods purchase, not a services/works contract -- no TDS section (194C/194J) applies."}
+      ],
+      "why": "Tests that the diff catches BOTH errors independently rather than stopping at the first one found."
+    }
+  ]
+}
