@@ -273,6 +273,15 @@ within the original timeline.
   honestly here rather than only showing a clean sweep, per the assignment
   brief's own framing that an understood failure is a stronger signal than
   a score.
+- **Live end-to-end contract tests, against the hosted deployment:**
+  6/6 passed (`RUN_LIVE_E2E=1 E2E_N8N_BASE_URL=https://ap-agent-n8n.onrender.com
+  pytest e2e -v -m live_e2e`) — [e2e/test_live_workflows.py](e2e/test_live_workflows.py). Complements the golden-value
+  eval suite above with response-contract checks against the real deployed
+  n8n/Postgres/FastAPI chain: the stale-vendor-rate recomputation, the
+  effective-date boundary, a correct UC2 advice being accepted, a
+  multi-error advice reporting all of its errors, the category-conflict
+  refusal blocking validation, and an unknown invoice reference producing a
+  clean "not found" rather than an error.
 - **Recruiter-style adversarial probes:** 10 additional cases designed
   from an interviewer's-eye view of where candidates typically cut corners
   ([eval/recruiter_probe_cases.md](eval/recruiter_probe_cases.md)) — including the most serious bug this
