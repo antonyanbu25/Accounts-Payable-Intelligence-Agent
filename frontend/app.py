@@ -133,6 +133,13 @@ with tab_ask:
                 try:
                     resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask", json={"question": question}, timeout=90)
                     data = resp.json()
+                    if "narrative" not in data and data.get("message"):
+                        # Graceful-refusal paths (nonexistent vendor, out-of-
+                        # domain question) return {error, message}, not
+                        # {narrative, evidence} -- surface that message
+                        # directly instead of falling through to a blank
+                        # "(no answer returned)".
+                        data = {"narrative": data["message"], "evidence": {}}
                 except Exception as e:
                     data = {"narrative": f"Something went wrong reaching the agent: {e}", "evidence": {}}
             st.write(data.get("narrative", "(no answer returned)"))
