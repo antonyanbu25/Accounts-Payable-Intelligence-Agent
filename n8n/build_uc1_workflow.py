@@ -19,8 +19,11 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 N8N_BASE = os.environ["N8N_BASE_URL"]
 N8N_KEY = os.environ["N8N_API_KEY"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
-PG_CRED_ID = "RuLJlMwbZqaK22dc"  # from the credential created earlier
-FASTAPI_BASE = "http://127.0.0.1:8123"
+# Both overridable so this same script builds either the local dev workflow
+# or the deployed one, without hardcoding one target's values over the
+# other's. Defaults are the local dev instance's values.
+PG_CRED_ID = os.environ.get("N8N_PG_CRED_ID", "RuLJlMwbZqaK22dc")
+FASTAPI_BASE = os.environ.get("FASTAPI_BASE_URL", "http://127.0.0.1:8123")
 
 HEADERS = {"X-N8N-API-KEY": N8N_KEY, "Content-Type": "application/json"}
 
@@ -356,3 +359,11 @@ for wf in existing.get("data", []):
 r = requests.post(f"{N8N_BASE}/api/v1/workflows", headers=HEADERS, json=workflow)
 print(r.status_code)
 print(json.dumps(r.json(), indent=2)[:3000])
+
+# Activate -- a webhook's production URL only responds once its workflow is
+# active (test URLs work either way, which is how this went unnoticed
+# locally). UC2's build script already does this; this brings UC1 in line.
+if r.status_code in (200, 201):
+    wf_id = r.json()["id"]
+    r2 = requests.post(f"{N8N_BASE}/api/v1/workflows/{wf_id}/activate", headers=HEADERS)
+    print("activated:", r2.status_code, wf_id)

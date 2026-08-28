@@ -19,8 +19,11 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 N8N_BASE = os.environ["N8N_BASE_URL"]
 N8N_KEY = os.environ["N8N_API_KEY"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
-PG_CRED_ID = "RuLJlMwbZqaK22dc"
-FASTAPI_BASE = "http://127.0.0.1:8123"
+# Both overridable so this same script builds either the local dev workflow
+# or the deployed one, without hardcoding one target's values over the
+# other's. Defaults are the local dev instance's values.
+PG_CRED_ID = os.environ.get("N8N_PG_CRED_ID", "RuLJlMwbZqaK22dc")
+FASTAPI_BASE = os.environ.get("FASTAPI_BASE_URL", "http://127.0.0.1:8123")
 HEADERS = {"X-N8N-API-KEY": N8N_KEY, "Content-Type": "application/json"}
 
 RETRIEVE_FACTS_SQL = """SELECT
