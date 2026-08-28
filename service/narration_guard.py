@@ -19,13 +19,24 @@ _DATE_PATTERNS = [
     r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s*,?\s*\d{4}\b",
     r"\b\d{4}-\d{2}-\d{2}\b",
     r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+    # bare 4-digit year (e.g. "Income Tax Act, 1961", "Notification ... 2017")
+    # -- found by live testing: real amounts in this domain are never bare,
+    # un-grouped 4-digit numbers landing in this narrow 1900-2099 range, so
+    # this is safe here even though it's not a universal rule.
+    r"\b(19|20)\d{2}\b",
 ]
 
-# A number immediately followed by a letter (e.g. "194J", "998313" is fine,
-# but "194J" is a section reference) is a code, not an amount -- \b after the
-# digits requires a non-word boundary, so this is naturally excluded by the
-# main pattern below; this list is for extra, explicit safety on the section
-# format specifically.
+# Real HSN/SAC classification codes used in this project's tax_docs corpus --
+# legitimate for the narration to quote verbatim from a source clause, never
+# a monetary figure. A fixed, known, finite list (not user input), so
+# whitelisting them by value doesn't weaken protection against a genuinely
+# invented amount the way a blanket "long bare number = code" rule would.
+_KNOWN_CODES = ["9403", "998313", "998311", "996331", "8516", "6810", "2523"]
+
+# A number immediately followed by a letter (e.g. "194J") is a section
+# reference, not an amount -- \b after the digits requires a non-word
+# boundary, so a plain \d+\b pattern naturally can't isolate "194" from
+# "194J" anyway; this pattern makes that exclusion explicit and robust.
 _SECTION_REF_PATTERN = r"\b\d+[A-Z]\b"
 
 # ONE combined pattern, scanned in a SINGLE pass. The comma-grouped
@@ -45,6 +56,8 @@ def _strip_dates_and_sections(text: str) -> str:
     for pat in _DATE_PATTERNS:
         text = re.sub(pat, " ", text, flags=re.IGNORECASE)
     text = re.sub(_SECTION_REF_PATTERN, " ", text)
+    for code in _KNOWN_CODES:
+        text = re.sub(r"\b" + re.escape(code) + r"\b", " ", text)
     return text
 
 

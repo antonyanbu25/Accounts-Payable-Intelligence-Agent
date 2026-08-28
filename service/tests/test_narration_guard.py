@@ -33,6 +33,16 @@ def test_section_reference_not_flagged():
     assert numbers == [], f"section codes leaked through as numbers: {numbers}"
 
 
+def test_bare_year_and_classification_code_not_flagged():
+    """Found by live Day-5 testing: 'Income Tax Act, 1961' and 'SAC 998313'
+    were both being flagged as invented figures -- neither is a monetary
+    amount, both are legitimate verbatim quotes from a source document."""
+    text = ("Software services under SAC 998313 attract GST at 18%. TDS applies "
+            "at 10% under Section 194J of the Income Tax Act, 1961.")
+    result = check_narration(text, structured_values=[18, 10])
+    assert result["passed"] is True, result
+
+
 def test_comma_grouped_number_not_fragmented():
     numbers = extract_numbers("The total is 1,23,456.78 for this quarter.")
     assert numbers == [123456.78], numbers

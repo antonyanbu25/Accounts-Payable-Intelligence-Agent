@@ -132,7 +132,7 @@ def do_diff(req: DiffRequest):
         unapplied_advance_advisory=cr.get("unapplied_advance_advisory"),
         category_conflict=cr.get("category_conflict"), tax_treatment_refused=cr.get("tax_treatment_refused", False),
     )
-    result = diff_advice(tr, req.submitted_advice.dict(), category_reason=req.category_reason or "")
+    result = diff_advice(tr, req.submitted_advice.model_dump(), category_reason=req.category_reason or "")
     return DiffResponse(
         overall_match=result.overall_match, blocked=result.blocked, blocked_reason=result.blocked_reason,
         fields=[FieldDiffModel(field=f.field, claimed=f.claimed, correct=f.correct, match=f.match, reason=f.reason)
