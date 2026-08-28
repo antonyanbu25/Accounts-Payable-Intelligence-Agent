@@ -342,4 +342,12 @@ with tab_browse:
 
         conn.close()
     except Exception as e:
-        st.error(f"Could not reach the database: {e}")
+        # Never interpolate the raw exception into a user-facing message --
+        # a driver-level connection error (e.g. "invalid dsn") echoes back
+        # the malformed connection string itself, which can contain a
+        # misconfigured secret. Log server-side (Render's own log tab, not
+        # public) for actual debugging; show only a generic message here.
+        print(f"[browse-mock-data] DB connection failed: {e}")
+        st.error("Could not reach the database. This is a configuration issue on the "
+                 "backend, not something on your end -- the mock-data browser is "
+                 "temporarily unavailable.")
