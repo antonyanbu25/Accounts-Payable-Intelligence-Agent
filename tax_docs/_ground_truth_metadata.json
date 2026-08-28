@@ -1,0 +1,145 @@
+{
+  "_note": "Hand-authored answer key, NOT read by the system. Used on Day 2 to verify the ingestion/extraction pipeline pulls the correct metadata out of each document's prose. state_scope 'ALL' means the rule applies nationally regardless of vendor state (true for every GST rate/split rule and every TDS rule); a specific state means the document is state-scoped (the Karnataka professional tax distractor).",
+  "documents": [
+    {
+      "file": "gst_place_of_supply.md",
+      "doc_type": "GST_SPLIT_RULE",
+      "hsn_or_sac": null,
+      "category": null,
+      "state_scope": "ALL",
+      "effective_from": "2019-07-01",
+      "effective_to": null,
+      "role": "general rule, not category-specific"
+    },
+    {
+      "file": "gst_furniture.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": "9403",
+      "category": "Furniture",
+      "state_scope": "ALL",
+      "effective_from": "2017-07-01",
+      "effective_to": null,
+      "rate_pct": 18.0,
+      "role": "clean baseline"
+    },
+    {
+      "file": "gst_appliances.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": "8516",
+      "category": "Appliances",
+      "state_scope": "ALL",
+      "effective_from": "2017-07-01",
+      "effective_to": null,
+      "rate_pct": 18.0,
+      "role": "adjacent-category distractor vs. furniture"
+    },
+    {
+      "file": "gst_services.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": "998311",
+      "category": "Services",
+      "state_scope": "ALL",
+      "effective_from": "2017-07-01",
+      "effective_to": null,
+      "rate_pct": 18.0,
+      "role": "clean baseline"
+    },
+    {
+      "file": "gst_software_pre_sep2025.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": "998313",
+      "category": "Software",
+      "state_scope": "ALL",
+      "effective_from": "2017-07-01",
+      "effective_to": "2025-09-21",
+      "rate_pct": 18.0,
+      "role": "superseded rate — distractor for post-change queries"
+    },
+    {
+      "file": "gst_software_post_sep2025.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": "998313",
+      "category": "Software",
+      "state_scope": "ALL",
+      "effective_from": "2025-09-22",
+      "effective_to": null,
+      "rate_pct": 12.0,
+      "role": "current rate"
+    },
+    {
+      "file": "gst_food_pre_sep2025.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": "996331",
+      "category": "Food",
+      "state_scope": "ALL",
+      "effective_from": "2017-11-15",
+      "effective_to": "2025-09-21",
+      "rate_pct": 18.0,
+      "role": "superseded rate — distractor for post-change queries"
+    },
+    {
+      "file": "gst_food_post_sep2025_amendment.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": "996331",
+      "category": "Food",
+      "state_scope": "ALL",
+      "effective_from": "2025-09-22",
+      "effective_to": null,
+      "rate_pct": 5.0,
+      "role": "HARD TO INGEST — current rate, no clean header, amends prior circular by reference, category scope stated only in prose"
+    },
+    {
+      "file": "tds_professional_technical.md",
+      "doc_type": "TDS_RATE",
+      "hsn_or_sac": ["998313", "998311"],
+      "category": ["Software", "Services"],
+      "state_scope": "ALL",
+      "effective_from": "2020-04-01",
+      "effective_to": null,
+      "rate_pct": 10.0,
+      "section": "194J"
+    },
+    {
+      "file": "tds_catering_contracts.md",
+      "doc_type": "TDS_RATE",
+      "hsn_or_sac": "996331",
+      "category": "Food",
+      "state_scope": "ALL",
+      "effective_from": "2020-04-01",
+      "effective_to": null,
+      "rate_pct": 2.0,
+      "section": "194C"
+    },
+    {
+      "file": "tds_gst_exclusion_rule.md",
+      "doc_type": "TDS_COMPUTATION_RULE",
+      "hsn_or_sac": null,
+      "category": null,
+      "state_scope": "ALL",
+      "effective_from": "2017-07-19",
+      "effective_to": null,
+      "role": "TDS base excludes GST — real CBDT Circular 23/2017"
+    },
+    {
+      "file": "state_professional_tax_karnataka.md",
+      "doc_type": "UNRELATED_STATE_LEVY",
+      "hsn_or_sac": null,
+      "category": null,
+      "state_scope": "Karnataka",
+      "effective_from": "2023-04-01",
+      "effective_to": null,
+      "role": "out-of-scope distractor — employer payroll levy, not vendor GST"
+    },
+    {
+      "file": "gst_construction_materials.md",
+      "doc_type": "GST_RATE",
+      "hsn_or_sac": ["6810", "2523"],
+      "category": "Construction Materials",
+      "state_scope": "ALL",
+      "effective_from": "2017-07-01",
+      "effective_to": null,
+      "rate_pct": 28.0,
+      "role": "out-of-scope distractor — category not purchased by this org"
+    }
+  ]
+}
