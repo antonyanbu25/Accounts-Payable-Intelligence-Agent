@@ -19,7 +19,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 N8N_BASE = os.environ["N8N_BASE_URL"]
 N8N_KEY = os.environ["N8N_API_KEY"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
-PG_CRED_ID = "dfbUmJhCjrz5cw6G"
+PG_CRED_ID = "RuLJlMwbZqaK22dc"
 FASTAPI_BASE = "http://127.0.0.1:8123"
 HEADERS = {"X-N8N-API-KEY": N8N_KEY, "Content-Type": "application/json"}
 
@@ -145,8 +145,10 @@ def postgres_node(name, sql, node_id, x, y, always_output=False):
     return node
 
 
+# See build_uc1_workflow.py for why this reads from the environment rather
+# than embedding the key directly.
 anthropic_headers = [
-    {"name": "x-api-key", "value": ANTHROPIC_KEY},
+    {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
     {"name": "anthropic-version", "value": "2023-06-01"},
     {"name": "content-type", "value": "application/json"},
 ]

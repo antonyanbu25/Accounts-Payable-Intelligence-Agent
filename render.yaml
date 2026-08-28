@@ -1,0 +1,96 @@
+# Render Blueprint — deploys all three application services.
+#
+# The Postgres database is NOT declared here: it already exists (created
+# directly on Render before this Blueprint), so this file references it via
+# env vars you'll be prompted to paste in when you connect this Blueprint —
+# those values are never written into this file or committed to git.
+#
+# After connecting: Render will ask for every "sync: false" value below.
+# Have ready: your Anthropic API key, and the database connection details
+# (from the existing Postgres instance's "Connect" page: host, port,
+# database name, user, password).
+
+services:
+  # ---------------------------------------------------------------------
+  # n8n — orchestration. Uses the official public Docker image directly,
+  # no Dockerfile needed. Configured to use the existing Postgres database
+  # (in its own 'n8n' schema) for its own storage, so workflows and
+  # credentials survive restarts and redeploys on Render's ephemeral disk.
+  # ---------------------------------------------------------------------
+  - type: web
+    name: ap-agent-n8n
+    runtime: image
+    image:
+      url: docker.io/n8nio/n8n:latest
+    plan: free
+    envVars:
+      - key: N8N_PORT
+        value: 10000
+      - key: PORT
+        value: 10000
+      - key: N8N_PROTOCOL
+        value: https
+      # Predicted from the service name below (Render's default URL pattern
+      # is https://<service-name>.onrender.com). If Render assigns a
+      # different subdomain (e.g. due to a name collision), update these two
+      # values to match after the first deploy -- everything else is fine.
+      - key: N8N_HOST
+        value: ap-agent-n8n.onrender.com
+      - key: WEBHOOK_URL
+        value: https://ap-agent-n8n.onrender.com/
+      - key: DB_TYPE
+        value: postgresdb
+      - key: DB_POSTGRESDB_SCHEMA
+        value: n8n
+      - key: DB_POSTGRESDB_HOST
+        sync: false
+      - key: DB_POSTGRESDB_PORT
+        value: 5432
+      - key: DB_POSTGRESDB_DATABASE
+        sync: false
+      - key: DB_POSTGRESDB_USER
+        sync: false
+      - key: DB_POSTGRESDB_PASSWORD
+        sync: false
+      - key: N8N_ENCRYPTION_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: N8N_BLOCK_ENV_ACCESS_IN_NODE
+        value: false
+
+  # ---------------------------------------------------------------------
+  # Python/FastAPI — deterministic compute, tax lookup, diff, and the
+  # narration guard. Rebuilds its tax-document search index from the
+  # committed tax_docs/ files on every deploy, so it can never silently
+  # drift from what's actually in the repo.
+  # ---------------------------------------------------------------------
+  - type: web
+    name: ap-agent-service
+    runtime: python
+    rootDir: service
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python ingest.py && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  # ---------------------------------------------------------------------
+  # Streamlit — the chat UI, UC2 validation, and the browse-data tab.
+  # Talks to n8n's public webhook URL and reads Postgres directly (for
+  # the browse-data tab only — never for anything the agent computes).
+  # ---------------------------------------------------------------------
+  - type: web
+    name: ap-agent-frontend
+    runtime: python
+    rootDir: frontend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      # Same predicted-URL note as the n8n service above.
+      - key: N8N_BASE_URL
+        value: https://ap-agent-n8n.onrender.com
+      - key: DATABASE_URL
+        sync: false

@@ -31,6 +31,21 @@ The live suite verifies:
 2. UC1 uses the invoice date when selecting an effective-dated rule.
 3. UC2 accepts a fully correct advice rather than producing a false positive.
 4. UC2 identifies multiple independent errors in one advice.
-5. UC2 returns a clear not-found response for an unknown invoice.
+5. UC2 blocks validation when the PO and invoice categories conflict.
+6. UC2 returns a clear not-found response for an unknown invoice.
+
+## Recruiter probes
+
+`service/tests/test_recruiter_probes_e2e.py` adds the deliberate follow-up
+cases that are easy to miss in a polished happy-path demo:
+
+1. A tax rule absent from the corpus must return `not_found`, never a plausible
+   current rate.
+2. An advice with perfect arithmetic must still show a payment-release hold if
+   its PO is cancelled.
+3. A submitted category that contradicts the invoice cannot be ignored merely
+   because the monetary fields happen to match.
+4. The narration guard must reject an unsupported currency amount even when
+   the sentence otherwise sounds credible.
 
 Never set `RUN_LIVE_E2E=1` against a production database containing real financial data. This assessment uses synthetic seeded data only.

@@ -35,7 +35,7 @@
           "parameters": [
             {
               "name": "x-api-key",
-              "value": "REPLACE_WITH_CREDENTIAL_OR_ENV_VAR"
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
             },
             {
               "name": "anthropic-version",
@@ -112,7 +112,7 @@
       },
       "credentials": {
         "postgres": {
-          "id": "dfbUmJhCjrz5cw6G",
+          "id": "RuLJlMwbZqaK22dc",
           "name": "AP Postgres (Render)"
         }
       },
@@ -163,7 +163,7 @@
       },
       "credentials": {
         "postgres": {
-          "id": "dfbUmJhCjrz5cw6G",
+          "id": "RuLJlMwbZqaK22dc",
           "name": "AP Postgres (Render)"
         }
       }
@@ -229,7 +229,7 @@
           "parameters": [
             {
               "name": "x-api-key",
-              "value": "REPLACE_WITH_CREDENTIAL_OR_ENV_VAR"
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
             },
             {
               "name": "anthropic-version",
@@ -394,7 +394,7 @@
           "parameters": [
             {
               "name": "x-api-key",
-              "value": "REPLACE_WITH_CREDENTIAL_OR_ENV_VAR"
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
             },
             {
               "name": "anthropic-version",

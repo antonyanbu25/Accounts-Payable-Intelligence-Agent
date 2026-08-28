@@ -19,7 +19,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 N8N_BASE = os.environ["N8N_BASE_URL"]
 N8N_KEY = os.environ["N8N_API_KEY"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
-PG_CRED_ID = "dfbUmJhCjrz5cw6G"  # from the credential created earlier
+PG_CRED_ID = "RuLJlMwbZqaK22dc"  # from the credential created earlier
 FASTAPI_BASE = "http://127.0.0.1:8123"
 
 HEADERS = {"X-N8N-API-KEY": N8N_KEY, "Content-Type": "application/json"}
@@ -256,8 +256,12 @@ CHECK_NARRATION_HYPOTHETICAL_BODY_EXPR = """={{ (() => {
 })() }}"""
 
 
+# Reads from the n8n process's own environment at runtime, rather than
+# embedding the literal key in the workflow definition -- so the exported
+# workflow JSON (committed to GitHub) never contains a real secret, and the
+# actual key only ever lives in Render's environment-variable store.
 anthropic_headers = [
-    {"name": "x-api-key", "value": ANTHROPIC_KEY},
+    {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
     {"name": "anthropic-version", "value": "2023-06-01"},
     {"name": "content-type", "value": "application/json"},
 ]

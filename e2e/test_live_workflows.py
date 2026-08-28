@@ -124,6 +124,28 @@ def test_uc2_multi_error_advice_reports_all_key_errors():
     assert _field(diff, "net_payable")["match"] is False
 
 
+def test_uc2_unresolved_category_conflict_blocks_validation():
+    """A plausible advice cannot pass when PO and invoice categories disagree."""
+    result = _post(
+        "uc2-validate",
+        {
+            "invoice_id": 16,
+            "submitted_advice": {
+                "base_amount": 90000.0,
+                "category": "Services",
+                "gst_rate_pct": 18.0,
+                "gst_cgst": 8100.0,
+                "gst_sgst": 8100.0,
+                "tds_amount": 9000.0,
+                "net_payable_claimed": 97200.0,
+            },
+        },
+    )
+
+    assert result["diff"]["blocked"] is True
+    assert "unresolved" in result["diff"]["blocked_reason"].lower()
+
+
 def test_uc2_unknown_invoice_is_a_clean_not_found_response():
     result = _post(
         "uc2-validate",
