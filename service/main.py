@@ -13,11 +13,12 @@ from fastapi import FastAPI, HTTPException
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 from compute import (  # noqa: E402
-    CategoryConflict, LedgerFacts, TaxDetermination, compute, determine_gst_split_type,
+    CategoryConflict, ComputeResult, LedgerFacts, TaxDetermination, compute, determine_gst_split_type,
 )
+from diff import diff_advice  # noqa: E402
 from models import (  # noqa: E402
-    ComputeRequest, ComputeResponse, NarrationCheckRequest, NarrationCheckResponse,
-    TaxLookupRequest, TaxLookupResponse, TaxLookupSubResult,
+    ComputeRequest, ComputeResponse, DiffRequest, DiffResponse, FieldDiffModel, NarrationCheckRequest,
+    NarrationCheckResponse, TaxLookupRequest, TaxLookupResponse, TaxLookupSubResult,
 )
 from narration_guard import check_narration  # noqa: E402
 from tax_lookup import TaxCorpus  # noqa: E402
@@ -113,6 +114,29 @@ def do_compute(req: ComputeRequest):
         unapplied_advance_advisory=result.unapplied_advance_advisory,
         category_conflict=(result.category_conflict.__dict__ if result.category_conflict else None),
         tax_treatment_refused=result.tax_treatment_refused,
+    )
+
+
+@app.post("/diff", response_model=DiffResponse)
+def do_diff(req: DiffRequest):
+    """Compares an independently-computed true result (from /compute) against a
+    submitted advice. The caller is responsible for ensuring /compute was run
+    WITHOUT ever seeing the submitted advice -- this endpoint only compares,
+    it never re-derives the true result itself."""
+    cr = req.compute_result
+    tr = ComputeResult(
+        base_amount=cr.get("base_amount"), gst=cr.get("gst"), tds_amount=cr.get("tds_amount"),
+        gross_liability=cr.get("gross_liability"), net_disbursement_due=cr.get("net_disbursement_due"),
+        pre_tax_ledger_position=cr.get("pre_tax_ledger_position"), eligibility=cr.get("eligibility", ""),
+        eligibility_reasons=cr.get("eligibility_reasons", []), three_way_match=None,
+        unapplied_advance_advisory=cr.get("unapplied_advance_advisory"),
+        category_conflict=cr.get("category_conflict"), tax_treatment_refused=cr.get("tax_treatment_refused", False),
+    )
+    result = diff_advice(tr, req.submitted_advice.dict(), category_reason=req.category_reason or "")
+    return DiffResponse(
+        overall_match=result.overall_match, blocked=result.blocked, blocked_reason=result.blocked_reason,
+        fields=[FieldDiffModel(field=f.field, claimed=f.claimed, correct=f.correct, match=f.match, reason=f.reason)
+                for f in result.fields],
     )
 
 

@@ -63,6 +63,39 @@ class ComputeResponse(BaseModel):
     tax_treatment_refused: bool
 
 
+class SubmittedAdvice(BaseModel):
+    base_amount: Optional[float] = None
+    category: Optional[str] = None
+    gst_rate_pct: Optional[float] = None
+    gst_cgst: Optional[float] = None
+    gst_sgst: Optional[float] = None
+    gst_igst: Optional[float] = None
+    tds_rate_pct: Optional[float] = None
+    tds_amount: Optional[float] = None
+    net_payable_claimed: Optional[float] = None
+
+
+class DiffRequest(BaseModel):
+    compute_result: dict  # the exact JSON body returned by /compute
+    submitted_advice: SubmittedAdvice
+    category_reason: Optional[str] = None
+
+
+class FieldDiffModel(BaseModel):
+    field: str
+    claimed: Optional[float] = None
+    correct: Optional[float] = None
+    match: bool
+    reason: str = ""
+
+
+class DiffResponse(BaseModel):
+    overall_match: bool
+    blocked: bool
+    blocked_reason: str = ""
+    fields: list[FieldDiffModel]
+
+
 class NarrationCheckRequest(BaseModel):
     narrative_text: str
     structured_values: list  # every number that's legitimately allowed to appear
