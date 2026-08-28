@@ -1,0 +1,11 @@
+# Committed deliberately (see ../../.gitignore) -- pins the theme regardless
+# of the viewer's OS light/dark setting, and moves off Streamlit's default
+# red accent to a restrained slate-teal more in keeping with a finance tool
+# than a generic demo.
+[theme]
+base = "light"
+primaryColor = "#3d6b6f"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f6f6"
+textColor = "#1a1f1f"
+font = "sans serif"

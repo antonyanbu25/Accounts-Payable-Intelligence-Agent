@@ -10,6 +10,7 @@ import os
 import re
 from typing import Optional
 
+import pandas as pd
 import psycopg2
 import psycopg2.extras
 import requests
@@ -23,7 +24,58 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 
 st.set_page_config(page_title="AP Intelligence Agent", page_icon="📒", layout="wide")
 
-st.title("📒 Accounts Payable Intelligence Agent")
+# ---------------------------------------------------------------------------
+# Global styling. Targets Streamlit's data-testid attributes directly, which
+# is why streamlit is version-pinned in requirements.txt -- these attribute
+# names have changed across major Streamlit releases before. Verified
+# against the actual rendered DOM of this deployment (not guessed) before
+# writing these selectors.
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+/* Currency/ID figures read as a ledger, not chat prose */
+[data-testid="stMetricValue"] {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Restrained, harmonized alert palette (this app pins base="light" in
+   .streamlit/config.toml, so these are calibrated for a light background) */
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {
+    background-color: #e8f3ea; border: 1px solid #b8dcc0;
+}
+[data-testid="stAlertContentSuccess"] { color: #1e6b33 !important; }
+
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {
+    background-color: #fbeaea; border: 1px solid #eec3c3;
+}
+[data-testid="stAlertContentError"] { color: #a12020 !important; }
+
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) {
+    background-color: #eaf1f4; border: 1px solid #c5dbe3;
+}
+[data-testid="stAlertContentInfo"] { color: #2a5a70 !important; }
+
+/* Warning = the "hold / not eligible" family -- deliberately its own color,
+   distinct from error red. A numeric mismatch (error) and a payment-
+   eligibility hold (warning) are different questions and must never be
+   visually confusable with each other -- see render_evidence() and the
+   eligibility block in the UC2 tab below. */
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {
+    background-color: #fbf0d9; border: 1px solid #e8c873; border-left: 4px solid #b8860b;
+}
+[data-testid="stAlertContentWarning"] { color: #7a5200 !important; font-weight: 600; }
+
+/* Muted secondary text instead of near-full-opacity */
+[data-testid="stCaptionContainer"] { opacity: 0.72; }
+
+/* Bordered metric cards instead of borderless floating labels */
+[data-testid="stMetric"] {
+    background-color: #f4f6f6; border: 1px solid #e0e4e4; border-radius: 6px; padding: 12px 16px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Accounts Payable Intelligence Agent")
 st.caption(
     "A working prototype reasoning across a Procurement Portal, an SAP-style Vendor & Payments DB, "
     "and synthetic tax/regulatory documents. Every number shown traces to a source record or a quoted "
@@ -31,7 +83,7 @@ st.caption(
 )
 
 tab_ask, tab_validate, tab_browse = st.tabs(
-    ["💬 Ask a Question", "✅ Validate a Payment Advice", "📊 Browse Mock Data"]
+    ["Ask a Question", "Validate a Payment Advice", "Browse Mock Data"]
 )
 
 
@@ -78,7 +130,7 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
                       f"/ invoice ₹{twm['invoice_base_amount']:,.2f} — difference exceeds tolerance (₹{twm['tolerance']:,.2f}).")
 
     if tax_evidence:
-        with st.expander("📜 Tax document sources (exact clause quoted)"):
+        with st.expander("Tax document sources (exact clause quoted)"):
             for label, key in [("GST", "gst"), ("TDS", "tds")]:
                 sub = tax_evidence.get(key)
                 if not sub:
@@ -89,7 +141,7 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
                 elif sub.get("status") == "not_found":
                     st.markdown(f"**{label}** — no applicable rule found in the corpus.")
 
-    with st.expander("🔍 Full structured evidence (raw)"):
+    with st.expander("Full structured evidence (raw)"):
         st.json(evidence)
 
 
@@ -278,9 +330,14 @@ with tab_validate:
 
                 # Deliberately separate from the numeric verdict above: whether
                 # the numbers are correct is a different question from whether
-                # this payment is actually clear to release.
+                # this payment is actually clear to release. st.warning (not
+                # st.error) is used specifically so this gets its own color
+                # family via the CSS above -- a numeric mismatch and an
+                # eligibility hold must never be visually confusable, even
+                # when (as here) the numbers are otherwise completely correct.
                 if not diff.get("eligible", True):
-                    st.error("🚫 **NOT CLEAR TO PAY** — regardless of whether the numbers above match:\n\n"
+                    st.divider()
+                    st.warning("🚫 **NOT CLEAR TO PAY** — regardless of whether the numbers above match:\n\n"
                               + "\n".join(f"- {r}" for r in diff.get("eligibility_reasons", [])))
 
                 if diff.get("fields"):
@@ -294,17 +351,38 @@ with tab_validate:
                             "Match?": "✅" if f["match"] else "❌",
                             "Why (if mismatched)": f["reason"],
                         })
-                    st.table(rows)
+                    df = pd.DataFrame(rows)
+
+                    def _match_style(val):
+                        if val == "✅":
+                            return "background-color: #e8f3ea; font-weight: 600;"
+                        if val == "❌":
+                            return "background-color: #fbeaea; font-weight: 600;"
+                        return ""
+
+                    # st.table (not st.dataframe) deliberately -- st.dataframe
+                    # renders to a <canvas> grid with no per-cell DOM, so CSS
+                    # and this Styler-based formatting can't reach it at all.
+                    # st.table renders real HTML, so both work.
+                    styled = (
+                        df.style
+                        .map(_match_style, subset=["Match?"])
+                        .set_properties(subset=["Submitted", "Correct"], **{
+                            "font-family": "ui-monospace, SFMono-Regular, monospace",
+                            "text-align": "right",
+                        })
+                    )
+                    st.table(styled)
 
                 if result.get("tax_evidence"):
-                    with st.expander("📜 Tax document sources for this reconstruction"):
+                    with st.expander("Tax document sources for this reconstruction"):
                         for label, key in [("GST", "gst"), ("TDS", "tds")]:
                             sub = result["tax_evidence"].get(key)
                             if sub and sub.get("status") == "found":
                                 st.markdown(f"**{label}** — *{sub['source_filename']}*")
                                 st.markdown(f"> {sub['key_clause']}")
 
-                with st.expander("🔍 Full raw response"):
+                with st.expander("Full raw response"):
                     st.json(result)
 
 
@@ -360,6 +438,16 @@ with tab_browse:
                "read like real Indian GST/TDS circulars, not real government issuances. "
                "See tax_docs/README.md in the repo for the full rationale behind each one.")
     tax_docs_dir = os.path.join(os.path.dirname(__file__), "..", "tax_docs")
+
+    def _doc_category_tag(fname: str) -> str:
+        if fname.startswith("gst_"):
+            return "GST"
+        if fname.startswith("tds_"):
+            return "TDS"
+        if fname.startswith("state_"):
+            return "STATE"
+        return "DOC"
+
     try:
         doc_files = sorted(f for f in os.listdir(tax_docs_dir)
                             if f.endswith(".md") and f != "README.md")
@@ -368,7 +456,8 @@ with tab_browse:
                 body = f.read()
             title_match = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
             title = title_match.group(1).strip() if title_match else fname
-            with st.expander(f"📄 {title}  ·  `{fname}`"):
+            tag = _doc_category_tag(fname)
+            with st.expander(f"[{tag}]  {title}  ·  `{fname}`"):
                 st.markdown(body)
     except FileNotFoundError:
         st.warning("Tax document corpus not found alongside this deployment.")

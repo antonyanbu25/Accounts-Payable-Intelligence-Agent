@@ -1,4 +1,9 @@
-streamlit
+# Pinned -- the custom CSS below targets specific data-testid attributes,
+# which Streamlit has renamed across major versions before. An unpinned
+# version would let a future rebuild silently pull a newer release and
+# break the styling (not the functionality) with zero code change here.
+streamlit==1.62.0
+pandas
 requests
 psycopg2-binary
 python-dotenv
