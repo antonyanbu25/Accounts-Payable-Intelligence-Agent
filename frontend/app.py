@@ -7,6 +7,7 @@ of the mock data -- it never computes anything itself.
 """
 import json
 import os
+import re
 from typing import Optional
 
 import psycopg2
@@ -351,3 +352,23 @@ with tab_browse:
         st.error("Could not reach the database. This is a configuration issue on the "
                  "backend, not something on your end -- the mock-data browser is "
                  "temporarily unavailable.")
+
+    # Source C -- read directly from the repo checkout (not Postgres), so this
+    # section still renders even if the DB connection above fails.
+    st.subheader("Tax & Regulatory Documents (Source C)")
+    st.caption("All documents below are **synthetic** -- written for this assignment to "
+               "read like real Indian GST/TDS circulars, not real government issuances. "
+               "See tax_docs/README.md in the repo for the full rationale behind each one.")
+    tax_docs_dir = os.path.join(os.path.dirname(__file__), "..", "tax_docs")
+    try:
+        doc_files = sorted(f for f in os.listdir(tax_docs_dir)
+                            if f.endswith(".md") and f != "README.md")
+        for fname in doc_files:
+            with open(os.path.join(tax_docs_dir, fname), encoding="utf-8") as f:
+                body = f.read()
+            title_match = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
+            title = title_match.group(1).strip() if title_match else fname
+            with st.expander(f"📄 {title}  ·  `{fname}`"):
+                st.markdown(body)
+    except FileNotFoundError:
+        st.warning("Tax document corpus not found alongside this deployment.")
