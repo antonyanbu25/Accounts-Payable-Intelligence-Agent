@@ -17,6 +17,7 @@ Design notes (see plan v4 for full rationale):
 """
 
 import datetime
+import os
 
 # -------------------------------------------------------------------------
 # Illustrative tax-rate tables (kept in sync with tax_docs/*.md)
@@ -317,13 +318,14 @@ out.append(emit("payment",
 out.append(emit("credit_note",
                  ["credit_id", "vendor_id", "invoice_id", "amount", "reason", "credit_date"], credit_notes))
 
-with open("seed_data.sql", "w") as f:
+_HERE = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(_HERE, "seed_data.sql"), "w") as f:
     f.write("\n\n".join(out) + "\n")
 
 print("Wrote db/seed_data.sql")
 
 # Also dump a human-readable scenario index so it's easy to hand-verify later
-with open("scenario_index.txt", "w") as f:
+with open(os.path.join(_HERE, "scenario_index.txt"), "w") as f:
     f.write("Invoice ID -> scenario note (for hand-verification / eval-set writing)\n")
     f.write("=" * 70 + "\n")
     for row in invoices:
