@@ -1,0 +1,19 @@
+# secrets — never commit these
+.env
+*.env.local
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# db artifacts generated locally
+db/seed_data.sql
+db/scenario_index.txt
+
+# confidential — marked "not for redistribution" by DevRev, never commit
+DevRev_Applied-AI-Strategist_Assignment_Antony-Sagayaraj*.PDF
+
+# misc
+.DS_Store
