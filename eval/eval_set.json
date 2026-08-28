@@ -198,20 +198,20 @@
     },
     {
       "id": "A3-false-positive-check",
-      "question": "UC2 validation: accountant submits an advice for INV-1 (Bright Office Furnishings) claiming base=85000, category=Furniture, GST rate=18% (CGST 7650 + SGST 7650, total 15300), TDS=0, net payable=100300.",
+      "question": "UC2 validation: accountant submits an advice for INV-1 (Bright Office Furnishings) claiming base=85000, category=Furniture, GST rate=18% (IGST 15300), TDS=0, net payable=100300.",
       "invoice_id": 1,
       "submitted_advice": {
         "base_amount": 85000.00, "category": "Furniture",
-        "gst_rate_pct": 18.0, "gst_cgst": 7650.00, "gst_sgst": 7650.00,
+        "gst_rate_pct": 18.0, "gst_igst": 15300.00,
         "tds_amount": 0.00, "net_payable_claimed": 100300.00
       },
       "expected_reconstruction": {
         "base_amount": 85000.00, "gst_rate_pct": 18.0,
-        "gst_split": {"type": "CGST+SGST", "cgst": 7650.00, "sgst": 7650.00},
+        "gst_split": {"type": "IGST", "igst": 15300.00},
         "tds_amount": 0.00, "gross_liability": 100300.00, "net_disbursement_due": 100300.00
       },
       "expected_verdict": "MATCH -- no divergence on any field. The agent must NOT invent a mismatch.",
-      "why": "The advice is genuinely, fully correct (vendor Maharashtra, office Maharashtra -> intra-state, matches the submitted CGST+SGST split). This is the single most important adversarial case -- a false accusation of error is a worse failure than a missed real one."
+      "why": "The advice is genuinely, fully correct (vendor Maharashtra, office Karnataka -> inter-state, correctly uses IGST not CGST+SGST). Corrected 2026-08-28: the original version of this case wrongly assumed office=Maharashtra without checking the seed data (the office is actually Karnataka/Bangalore) and specified a CGST+SGST split, which the live system correctly flagged as a mismatch against the real IGST treatment -- catching an error in this answer key, not in the system. This is still the single most important adversarial case -- a false accusation of error is a worse failure than a missed real one."
     },
     {
       "id": "A4-multi-error-advice",

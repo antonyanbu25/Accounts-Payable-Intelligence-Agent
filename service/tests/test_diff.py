@@ -19,10 +19,11 @@ def adv_case(case_id):
 
 
 def test_false_positive_advice_shows_no_mismatch():
-    """A3: an entirely-correct advice must produce overall_match=True."""
+    """A3: an entirely-correct advice must produce overall_match=True.
+    Vendor is Maharashtra, office is Karnataka -> inter-state -> IGST."""
     c = adv_case("A3-false-positive-check")
     facts = LedgerFacts(base_amount=85000.00, po_amount=85000.00, receipt_amount=85000.00)
-    tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=0.0, tds_section=None, split_type="CGST_SGST")
+    tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=0.0, tds_section=None, split_type="IGST")
     true_result = compute(facts, tax)
     advice = c["submitted_advice"]
     diff = diff_advice(true_result, advice)

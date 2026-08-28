@@ -148,13 +148,14 @@ def check_three_way_match_case():
 
 
 def test_false_positive_advice_matches_exactly():
-    """A2 adversarial case: an entirely-correct advice must NOT be flagged."""
+    """A3 adversarial case: an entirely-correct advice must NOT be flagged.
+    Vendor is Maharashtra, office is Karnataka -> inter-state -> IGST."""
     c = case("A3-false-positive-check")
     facts = LedgerFacts(base_amount=85000.00, po_amount=85000.00, receipt_amount=85000.00)
-    tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=0.0, tds_section=None, split_type="CGST_SGST")
+    tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=0.0, tds_section=None, split_type="IGST")
     r = compute(facts, tax)
     advice = c["submitted_advice"]
-    assert r.gst["cgst"] == advice["gst_cgst"] and r.gst["sgst"] == advice["gst_sgst"]
+    assert r.gst["igst"] == advice["gst_igst"]
     assert r.tds_amount == advice["tds_amount"]
     assert r.net_disbursement_due == advice["net_payable_claimed"] == c["expected_reconstruction"]["net_disbursement_due"]
 
