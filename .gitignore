@@ -23,3 +23,6 @@ DevRev_Applied-AI-Strategist_Assignment_Antony-Sagayaraj*.PDF
 
 # misc
 .DS_Store
+
+# n8n local dev instance data (contains credentials, DB state)
+n8n/data/

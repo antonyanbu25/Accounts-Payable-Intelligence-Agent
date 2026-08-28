@@ -1,0 +1,368 @@
+{
+  "name": "UC1 - Conversational Lookup",
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "UC1 Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "uc1-ask",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "uc1-ask"
+    },
+    {
+      "id": "parse_intent",
+      "name": "Parse Intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "REPLACE_WITH_CREDENTIAL_OR_ENV_VAR"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-sonnet-4-5-20250929\",\n  max_tokens: 300,\n  tools: [{\n    name: \"parse_ap_question\",\n    description: \"Parse an accounts-payable question into structured intent. If the question does not ask about a vendor balance or tax treatment, set intent to 'unsupported'.\",\n    input_schema: {\n      type: \"object\",\n      properties: {\n        intent: {type: \"string\", enum: [\"balance_lookup\",\"tax_lookup\",\"combined_lookup\",\"unsupported\"]},\n        vendor_name_mentioned: {type: \"string\", description: \"The vendor name as mentioned in the question, verbatim, or empty string if none.\"}\n      },\n      required: [\"intent\",\"vendor_name_mentioned\"]\n    }\n  }],\n  tool_choice: {type:\"tool\", name:\"parse_ap_question\"},\n  messages: [{role:\"user\", content: $json.body.question}]\n}) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "resolve_vendor",
+      "name": "Resolve Vendor",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT vendor_id, legal_name, similarity(legal_name, '{{ $json.content.find(c => c.type === \"tool_use\").input.vendor_name_mentioned.replace(/'/g, \"''\") }}') AS score\nFROM vendor_master\nWHERE similarity(legal_name, '{{ $json.content.find(c => c.type === \"tool_use\").input.vendor_name_mentioned.replace(/'/g, \"''\") }}') > 0.15\nORDER BY score DESC\nLIMIT 5;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "dfbUmJhCjrz5cw6G",
+          "name": "AP Postgres (Render)"
+        }
+      }
+    },
+    {
+      "id": "retrieve_facts",
+      "name": "Retrieve Facts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        780,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT\n  i.invoice_id, TO_CHAR(i.invoice_date, 'YYYY-MM-DD') AS invoice_date, i.base_amount, i.gst_rate_stated, i.gst_amount_stated, i.status AS invoice_status,\n  i.po_id,\n  v.vendor_id, v.legal_name, v.registered_state, v.status AS vendor_status, v.payment_terms, v.gstin,\n  vo.submitted_state AS onboarding_state,\n  ci.category_id AS invoice_category_id, ci.category_name AS invoice_category, ci.hsn_or_sac_code AS invoice_hsn_sac,\n  po.category_id AS po_category_id, cp.category_name AS po_category,\n  po.po_amount, po.status AS po_status,\n  r.received_amount, r.status AS receipt_status,\n  o.state AS office_state,\n  COALESCE((SELECT SUM(amount) FROM advance WHERE applied_against_invoice_id = i.invoice_id), 0) AS advances_applied,\n  COALESCE((SELECT SUM(amount) FROM advance WHERE vendor_id = v.vendor_id AND applied_against_invoice_id IS NULL), 0) AS unapplied_advances,\n  COALESCE((SELECT SUM(amount) FROM credit_note WHERE invoice_id = i.invoice_id), 0) AS credits_applied,\n  COALESCE((SELECT SUM(amount) FROM payment WHERE invoice_id = i.invoice_id), 0) AS payments_made\nFROM invoice i\nJOIN vendor_master v ON i.vendor_id = v.vendor_id\nJOIN vendor_onboarding vo ON v.vendor_id = vo.vendor_id\nJOIN category ci ON i.category_id = ci.category_id\nLEFT JOIN purchase_order po ON i.po_id = po.po_id\nLEFT JOIN category cp ON po.category_id = cp.category_id\nLEFT JOIN receipt r ON r.po_id = po.po_id\nLEFT JOIN requisition req ON po.requisition_id = req.requisition_id\nLEFT JOIN office o ON req.office_id = o.office_id\nWHERE i.vendor_id = {{ $('Resolve Vendor').first().json.vendor_id }}\nORDER BY i.invoice_date DESC\nLIMIT 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "dfbUmJhCjrz5cw6G",
+          "name": "AP Postgres (Render)"
+        }
+      }
+    },
+    {
+      "id": "tax_lookup",
+      "name": "Tax Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8123/tax-lookup",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  category: $('Retrieve Facts').first().json.invoice_category,\n  hsn_or_sac: $('Retrieve Facts').first().json.invoice_hsn_sac,\n  invoice_date: $('Retrieve Facts').first().json.invoice_date,\n  vendor_state: $('Retrieve Facts').first().json.registered_state,\n  office_state: $('Retrieve Facts').first().json.office_state,\n  needs_tds: true\n}) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "compute",
+      "name": "Compute",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8123/compute",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const f = $('Retrieve Facts').first().json;\n  const tax = $json;\n  const conflict = f.po_category && f.invoice_category && f.po_category !== f.invoice_category;\n  const body = {\n    base_amount: Number(f.base_amount),\n    advances_applied: Number(f.advances_applied),\n    credits_applied: Number(f.credits_applied),\n    payments_made: Number(f.payments_made),\n    unapplied_advances: Number(f.unapplied_advances),\n    po_amount: f.po_amount !== null ? Number(f.po_amount) : null,\n    receipt_amount: f.received_amount !== null ? Number(f.received_amount) : null,\n    vendor_status: f.vendor_status,\n    po_status: f.po_status,\n    invoice_status: f.invoice_status\n  };\n  if (conflict) {\n    body.category_conflict_po_category = f.po_category;\n    body.category_conflict_invoice_category = f.invoice_category;\n  } else {\n    body.gst_rate_pct = tax.gst.rate_pct;\n    body.tds_rate_pct = tax.tds ? tax.tds.rate_pct : 0.0;\n    body.tds_section = tax.tds ? tax.tds.tds_section : null;\n    body.split_type = tax.split_type;\n  }\n  return JSON.stringify(body);\n})() }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "narrate",
+      "name": "Narrate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "REPLACE_WITH_CREDENTIAL_OR_ENV_VAR"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-sonnet-4-5-20250929\",\n  max_tokens: 400,\n  messages: [{role:\"user\", content:\n    \"Write a short (2-4 sentence), plain-language answer to an accounts-payable question, using ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: \" + $('Retrieve Facts').first().json.legal_name + \". Onboarding state on file: \" + $('Retrieve Facts').first().json.onboarding_state + \" (vs. GSTIN-registered state used for tax: \" + $('Retrieve Facts').first().json.registered_state + \" -- mention this discrepancy briefly if they differ). Structured result: \" + JSON.stringify($json)\n  }]\n}) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "check_narration",
+      "name": "Check Narration",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8123/check-narration",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const c = $('Compute').first().json;\n  const nums = [c.base_amount, c.gross_liability, c.net_disbursement_due, c.tds_amount, c.pre_tax_ledger_position];\n  if (c.gst) { nums.push(c.gst.gst_amount, c.gst.cgst, c.gst.sgst, c.gst.igst); }\n  return JSON.stringify({\n    narrative_text: $json.content[0].text,\n    structured_values: nums.filter(n => n !== null && n !== undefined)\n  });\n})() }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "guard_if",
+      "name": "Guard Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.passed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2340,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ narrative: $('Narrate').first().json.content[0].text, evidence: $('Compute').first().json, tax_evidence: $('Tax Lookup').first().json, guard: 'passed' }) }}"
+      }
+    },
+    {
+      "id": "respond_fallback",
+      "name": "Respond Fallback (templated)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2340,
+        420
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ (() => { const c = $('Compute').first().json; return JSON.stringify({ narrative: 'Net disbursement due: ' + c.net_disbursement_due + ' (eligibility: ' + c.eligibility + '). [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed result directly.]', evidence: c, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"
+      }
+    }
+  ],
+  "connections": {
+    "UC1 Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Intent": {
+      "main": [
+        [
+          {
+            "node": "Resolve Vendor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Vendor": {
+      "main": [
+        [
+          {
+            "node": "Retrieve Facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve Facts": {
+      "main": [
+        [
+          {
+            "node": "Tax Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tax Lookup": {
+      "main": [
+        [
+          {
+            "node": "Compute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute": {
+      "main": [
+        [
+          {
+            "node": "Narrate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Narrate": {
+      "main": [
+        [
+          {
+            "node": "Check Narration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Narration": {
+      "main": [
+        [
+          {
+            "node": "Guard Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guard Passed?": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Fallback (templated)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
