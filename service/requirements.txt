@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+psycopg2-binary
+anthropic
+python-dotenv
+chromadb
+sentence-transformers
+pydantic
+pytest

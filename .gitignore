@@ -12,6 +12,12 @@ venv/
 db/seed_data.sql
 db/scenario_index.txt
 
+# regenerable via service/ingest.py — not committed (chroma_db is a local
+# vector index binary blob, extracted_metadata.json is its JSON export)
+service/chroma_db/
+service/extracted_metadata.json
+.pytest_cache/
+
 # confidential — marked "not for redistribution" by DevRev, never commit
 DevRev_Applied-AI-Strategist_Assignment_Antony-Sagayaraj*.PDF
 
