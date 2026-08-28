@@ -52,6 +52,14 @@ services:
         sync: false
       - key: DB_POSTGRESDB_PASSWORD
         sync: false
+      # Render's managed Postgres requires SSL. reject_unauthorized is set
+      # false because Render's cert isn't in n8n's default CA trust store --
+      # same reasoning already applied to the "AP Postgres" credential n8n
+      # uses to query our own AP data (allowUnauthorizedCerts: true there).
+      - key: DB_POSTGRESDB_SSL_ENABLED
+        value: true
+      - key: DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED
+        value: false
       - key: N8N_ENCRYPTION_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
