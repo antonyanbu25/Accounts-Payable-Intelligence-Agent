@@ -1,3 +1,11 @@
+# CPU-only PyTorch build -- sentence-transformers otherwise pulls the full
+# GPU-enabled build (a dozen NVIDIA CUDA packages, hundreds of MB), which is
+# pure dead weight on Render (no GPU) and was the actual cause of an
+# out-of-memory crash on deploy. This is PyTorch's own documented pattern
+# for a CPU-only install, not a workaround.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
 fastapi
 uvicorn[standard]
 psycopg2-binary
