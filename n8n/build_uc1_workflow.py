@@ -34,9 +34,10 @@ PARSE_INTENT_BODY_EXPR = """={{ JSON.stringify({
       type: "object",
       properties: {
         intent: {type: "string", enum: ["balance_lookup","tax_lookup","combined_lookup","unsupported"]},
-        vendor_name_mentioned: {type: "string", description: "The vendor name as mentioned in the question, verbatim, or empty string if none."}
+        vendor_name_mentioned: {type: "string", description: "The vendor name as mentioned in the question, verbatim, or empty string if none."},
+        invoice_id_mentioned: {type: ["integer","null"], description: "If the question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12). If no specific invoice is referenced, use null -- do not guess one."}
       },
-      required: ["intent","vendor_name_mentioned"]
+      required: ["intent","vendor_name_mentioned","invoice_id_mentioned"]
     }
   }],
   tool_choice: {type:"tool", name:"parse_ap_question"},
@@ -49,7 +50,7 @@ WHERE similarity(legal_name, '{{ $json.content.find(c => c.type === "tool_use").
 ORDER BY score DESC
 LIMIT 5;"""
 
-RETRIEVE_FACTS_SQL = """SELECT
+RETRIEVE_FACTS_SQL_TEMPLATE = """SELECT
   i.invoice_id, TO_CHAR(i.invoice_date, 'YYYY-MM-DD') AS invoice_date, i.base_amount, i.gst_rate_stated, i.gst_amount_stated, i.status AS invoice_status,
   i.po_id,
   v.vendor_id, v.legal_name, v.registered_state, v.status AS vendor_status, v.payment_terms, v.gstin,
@@ -72,9 +73,25 @@ LEFT JOIN category cp ON po.category_id = cp.category_id
 LEFT JOIN receipt r ON r.po_id = po.po_id
 LEFT JOIN requisition req ON po.requisition_id = req.requisition_id
 LEFT JOIN office o ON req.office_id = o.office_id
-WHERE i.vendor_id = {{ $('Resolve Vendor').first().json.vendor_id }}
-ORDER BY i.invoice_date DESC
+WHERE i.vendor_id = __VENDOR_ID__ __INVOICE_FILTER__
+__ORDER_CLAUSE__
 LIMIT 1;"""
+
+# Built as a JS IIFE rather than a static template: if the parsed question
+# named a specific invoice, filter to exactly that one (scoped to the
+# resolved vendor, so a mismatched invoice number for a DIFFERENT vendor
+# correctly returns zero rows rather than silently picking a wrong one);
+# otherwise fall back to that vendor's most recent invoice.
+RETRIEVE_FACTS_SQL_EXPR = ("={{ (() => {\n"
+    "  const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input;\n"
+    "  const vendorId = $('Resolve Vendor').first().json.vendor_id;\n"
+    "  const invFilter = (parsed.invoice_id_mentioned !== null && parsed.invoice_id_mentioned !== undefined)\n"
+    "    ? ('AND i.invoice_id = ' + parseInt(parsed.invoice_id_mentioned))\n"
+    "    : '';\n"
+    "  const orderClause = invFilter ? '' : 'ORDER BY i.invoice_date DESC';\n"
+    f"  const template = `{RETRIEVE_FACTS_SQL_TEMPLATE}`;\n"
+    "  return template.replace('__VENDOR_ID__', vendorId).replace('__INVOICE_FILTER__', invFilter).replace('__ORDER_CLAUSE__', orderClause);\n"
+    "})() }}")
 
 TAX_LOOKUP_BODY_EXPR = """={{ JSON.stringify({
   category: $('Retrieve Facts').first().json.invoice_category,
@@ -172,7 +189,7 @@ nodes = [
     http_node("Parse Intent", "https://api.anthropic.com/v1/messages", PARSE_INTENT_BODY_EXPR,
               "parse_intent", 260, 300, anthropic_headers),
     postgres_node("Resolve Vendor", RESOLVE_VENDOR_SQL, "resolve_vendor", 520, 300),
-    postgres_node("Retrieve Facts", RETRIEVE_FACTS_SQL, "retrieve_facts", 780, 300),
+    postgres_node("Retrieve Facts", RETRIEVE_FACTS_SQL_EXPR[1:], "retrieve_facts", 780, 300),  # [1:] strips the leading '=' postgres_node() re-adds
     http_node("Tax Lookup", f"{FASTAPI_BASE}/tax-lookup", TAX_LOOKUP_BODY_EXPR, "tax_lookup", 1040, 300),
     http_node("Compute", f"{FASTAPI_BASE}/compute", COMPUTE_BODY_EXPR, "compute", 1300, 300),
     http_node("Narrate", "https://api.anthropic.com/v1/messages", NARRATE_BODY_EXPR,
