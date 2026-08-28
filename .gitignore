@@ -26,3 +26,6 @@ DevRev_Applied-AI-Strategist_Assignment_Antony-Sagayaraj*.PDF
 
 # n8n local dev instance data (contains credentials, DB state)
 n8n/data/
+
+# streamlit local runtime
+frontend/.streamlit/
