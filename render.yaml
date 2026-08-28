@@ -69,9 +69,14 @@ services:
 
   # ---------------------------------------------------------------------
   # Python/FastAPI — deterministic compute, tax lookup, diff, and the
-  # narration guard. Rebuilds its tax-document search index from the
-  # committed tax_docs/ files on every deploy, so it can never silently
-  # drift from what's actually in the repo.
+  # narration guard. Reads the pre-built tax-document search index
+  # committed at service/chroma_db/ (read-only) rather than rebuilding it
+  # on every deploy. Rebuilding at deploy time meant installing and
+  # *loading* torch/sentence-transformers just to re-embed documents that
+  # hadn't changed -- that's what caused an out-of-memory crash on Render's
+  # free tier. Regenerate the index locally with
+  # `pip install -r requirements-ingest.txt && python ingest.py` whenever
+  # tax_docs/ changes, then re-commit service/chroma_db/.
   # ---------------------------------------------------------------------
   - type: web
     name: ap-agent-service
@@ -79,7 +84,7 @@ services:
     rootDir: service
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python ingest.py && uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false

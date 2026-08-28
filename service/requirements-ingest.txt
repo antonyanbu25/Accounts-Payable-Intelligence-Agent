@@ -1,0 +1,22 @@
+# One-time LOCAL TOOLING dependencies for ingest.py only -- never installed
+# on Render, never loaded by the deployed service (see requirements.txt).
+#
+# Run locally whenever tax_docs/ changes:
+#   pip install -r requirements-ingest.txt
+#   python ingest.py
+# then re-commit the regenerated service/chroma_db/ directory.
+#
+# CPU-only PyTorch build -- sentence-transformers otherwise pulls the full
+# GPU-enabled build (a dozen NVIDIA CUDA packages, hundreds of MB). Not
+# strictly required on a GPU-less machine (pip resolves to CPU-only anyway),
+# but pinned explicitly so this file is still safe to run on a Linux box
+# that does have a GPU, without silently downloading CUDA packages nobody
+# asked for.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+chromadb
+anthropic
+python-dotenv
+sentence-transformers
+pytest

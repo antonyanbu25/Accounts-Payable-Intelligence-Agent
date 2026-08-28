@@ -1,17 +1,18 @@
-# CPU-only PyTorch build -- sentence-transformers otherwise pulls the full
-# GPU-enabled build (a dozen NVIDIA CUDA packages, hundreds of MB), which is
-# pure dead weight on Render (no GPU) and was the actual cause of an
-# out-of-memory crash on deploy. This is PyTorch's own documented pattern
-# for a CPU-only install, not a workaround.
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-
+# Runtime dependencies for the DEPLOYED service only (main.py and everything
+# it imports: compute.py, diff.py, narration_guard.py, models.py,
+# tax_lookup.py). Verified by grep/AST that this import chain needs none of
+# torch, sentence-transformers, anthropic, or psycopg2-binary -- those are
+# one-time LOCAL TOOLING dependencies for ingest.py only (see
+# requirements-ingest.txt), never loaded by the live-serving process.
+#
+# This split is what fixed a real Render free-tier (512Mi) out-of-memory
+# crash: sentence-transformers/torch were previously installed and *loaded*
+# on every deploy just to rebuild a search index that doesn't change between
+# deploys. Now the deploy only reads the pre-built index committed at
+# service/chroma_db/ (see that directory's README), so those heavy
+# dependencies never need to be installed on Render at all.
 fastapi
 uvicorn[standard]
-psycopg2-binary
-anthropic
 python-dotenv
 chromadb
-sentence-transformers
 pydantic
-pytest

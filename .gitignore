@@ -12,9 +12,11 @@ venv/
 db/seed_data.sql
 db/scenario_index.txt
 
-# regenerable via service/ingest.py — not committed (chroma_db is a local
-# vector index binary blob, extracted_metadata.json is its JSON export)
-service/chroma_db/
+# chroma_db IS committed deliberately (see service/chroma_db/README.md) --
+# the live server reads it read-only and never runs ingest.py itself, so the
+# heavy embedding step (torch/sentence-transformers) never has to run on
+# Render's memory-constrained free tier. Regenerate locally with
+# `python service/ingest.py` whenever tax_docs/ changes, then re-commit.
 service/extracted_metadata.json
 .pytest_cache/
 
