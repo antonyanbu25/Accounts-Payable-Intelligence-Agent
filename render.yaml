@@ -22,7 +22,13 @@ services:
     runtime: image
     image:
       url: docker.io/n8nio/n8n:latest
-    plan: free
+    # standard (2GB RAM), not free -- n8n's baseline footprint (task broker +
+    # full node-type registry, loaded even at idle) reliably exceeds 512MB
+    # and crash-loops on Free/Starter. Confirmed via production logs: a
+    # repeating "JavaScript heap out of memory" crash every ~90s at idle,
+    # before any workflow ever ran. Render's own docs put n8n's minimum at
+    # 1GB even for light personal use -- this isn't over-provisioning.
+    plan: standard
     envVars:
       - key: N8N_PORT
         value: 10000
@@ -82,7 +88,12 @@ services:
     name: ap-agent-service
     runtime: python
     rootDir: service
-    plan: free
+    # starter, not free -- purely to remove Free tier's 15-min-inactivity
+    # spin-down (confirmed via Render's own docs: that behavior is scoped
+    # explicitly to "Free web service", not to paid instance types).
+    # 512MB is already proven sufficient here (see the OOM-fix commit) --
+    # this is not a resource upgrade, only an always-on one.
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -98,7 +109,9 @@ services:
     name: ap-agent-frontend
     runtime: python
     rootDir: frontend
-    plan: free
+    # starter, not free -- same reasoning as ap-agent-service above: only to
+    # remove the Free-tier spin-down, not because it needs more resources.
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
