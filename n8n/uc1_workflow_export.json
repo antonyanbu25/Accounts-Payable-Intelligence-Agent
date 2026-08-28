@@ -8,7 +8,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        300
+        400
       ],
       "parameters": {
         "httpMethod": "POST",
@@ -25,7 +25,7 @@
       "typeVersion": 4.2,
       "position": [
         260,
-        300
+        400
       ],
       "parameters": {
         "method": "POST",
@@ -49,8 +49,51 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-sonnet-4-5-20250929\",\n  max_tokens: 300,\n  tools: [{\n    name: \"parse_ap_question\",\n    description: \"Parse an accounts-payable question into structured intent. If the question does not ask about a vendor balance or tax treatment, set intent to 'unsupported'.\",\n    input_schema: {\n      type: \"object\",\n      properties: {\n        intent: {type: \"string\", enum: [\"balance_lookup\",\"tax_lookup\",\"combined_lookup\",\"unsupported\"]},\n        vendor_name_mentioned: {type: \"string\", description: \"The vendor name as mentioned in the question, verbatim, or empty string if none.\"},\n        invoice_id_mentioned: {type: [\"integer\",\"null\"], description: \"If the question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12). If no specific invoice is referenced, use null -- do not guess one.\"}\n      },\n      required: [\"intent\",\"vendor_name_mentioned\",\"invoice_id_mentioned\"]\n    }\n  }],\n  tool_choice: {type:\"tool\", name:\"parse_ap_question\"},\n  messages: [{role:\"user\", content: $json.body.question}]\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-sonnet-4-5-20250929\",\n  max_tokens: 300,\n  tools: [{\n    name: \"parse_ap_question\",\n    description: \"Parse an accounts-payable question into structured intent. If the question does not ask about a vendor balance or tax treatment, set intent to 'unsupported'.\",\n    input_schema: {\n      type: \"object\",\n      properties: {\n        intent: {type: \"string\", enum: [\"balance_lookup\",\"tax_lookup\",\"combined_lookup\",\"unsupported\"]},\n        vendor_name_mentioned: {type: \"string\", description: \"The vendor name as mentioned in the question, verbatim, or empty string if the question is about a purchase category in general rather than a specific vendor.\"},\n        invoice_id_mentioned: {type: [\"integer\",\"null\"], description: \"If the question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12). If no specific invoice is referenced, use null -- do not guess one.\"},\n        category_mentioned: {type: [\"string\",\"null\"], enum: [\"Furniture\",\"Software\",\"Services\",\"Food\",\"Appliances\",null], description: \"If the question is about a purchase category in general (no specific vendor named), which of these fixed categories it refers to. Null if a specific vendor was named instead, or if no category is identifiable.\"},\n        explicit_date_mentioned: {type: [\"string\",\"null\"], description: \"If the question states ANY date reference -- a full date ('1 September 2025' -> 2025-09-01), or just a bare year ('in 2010', 'during 2018') -> use January 1 of that year (2010-01-01, 2018-01-01). Null ONLY if no date or year is mentioned at all -- do not default to today yourself, that is handled downstream.\"}\n      },\n      required: [\"intent\",\"vendor_name_mentioned\",\"invoice_id_mentioned\",\"category_mentioned\",\"explicit_date_mentioned\"]\n    }\n  }],\n  tool_choice: {type:\"tool\", name:\"parse_ap_question\"},\n  messages: [{role:\"user\", content: $json.body.question}]\n}) }}",
         "options": {}
+      }
+    },
+    {
+      "id": "intent_supported_if",
+      "name": "Intent Supported?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        400,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.content.find(c => c.type === 'tool_use').input.intent }}",
+              "rightValue": "unsupported",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_unsupported",
+      "name": "Respond Unsupported",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        620
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'unsupported', message: 'This assistant only answers questions about vendor balances and tax treatment in the accounts payable system -- it can\\'t help with that.' }) }}"
       }
     },
     {
@@ -59,18 +102,48 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        520,
-        300
+        660,
+        400
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "=SELECT vendor_id, legal_name, similarity(legal_name, '{{ $json.content.find(c => c.type === \"tool_use\").input.vendor_name_mentioned.replace(/'/g, \"''\") }}') AS score\nFROM vendor_master\nWHERE similarity(legal_name, '{{ $json.content.find(c => c.type === \"tool_use\").input.vendor_name_mentioned.replace(/'/g, \"''\") }}') > 0.15\nORDER BY score DESC\nLIMIT 5;",
+        "query": "=SELECT vendor_id, legal_name, word_similarity('{{ $json.content.find(c => c.type === \"tool_use\").input.vendor_name_mentioned.replace(/'/g, \"''\") }}', legal_name) AS score\nFROM vendor_master\nWHERE word_similarity('{{ $json.content.find(c => c.type === \"tool_use\").input.vendor_name_mentioned.replace(/'/g, \"''\") }}', legal_name) > 0.4\nORDER BY score DESC\nLIMIT 5;",
         "options": {}
       },
       "credentials": {
         "postgres": {
           "id": "dfbUmJhCjrz5cw6G",
           "name": "AP Postgres (Render)"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "vendor_found_if",
+      "name": "Vendor Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        780,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.vendor_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
         }
       }
     },
@@ -80,8 +153,8 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        780,
-        300
+        1040,
+        260
       ],
       "parameters": {
         "operation": "executeQuery",
@@ -101,8 +174,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1040,
-        300
+        1300,
+        260
       ],
       "parameters": {
         "method": "POST",
@@ -123,8 +196,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1300,
-        300
+        1560,
+        260
       ],
       "parameters": {
         "method": "POST",
@@ -145,8 +218,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1560,
-        300
+        1820,
+        260
       ],
       "parameters": {
         "method": "POST",
@@ -180,8 +253,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1820,
-        300
+        2080,
+        260
       ],
       "parameters": {
         "method": "POST",
@@ -202,8 +275,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        2080,
-        300
+        2340,
+        260
       ],
       "parameters": {
         "conditions": {
@@ -231,8 +304,8 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        2340,
-        200
+        2600,
+        160
       ],
       "parameters": {
         "respondWith": "json",
@@ -245,12 +318,191 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        2340,
-        420
+        2600,
+        360
       ],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ (() => { const c = $('Compute').first().json; return JSON.stringify({ narrative: 'Net disbursement due: ' + c.net_disbursement_due + ' (eligibility: ' + c.eligibility + '). [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed result directly.]', evidence: c, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"
+      }
+    },
+    {
+      "id": "category_if",
+      "name": "Category Mentioned?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        560
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.category_mentioned }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "category_tax_lookup",
+      "name": "Category Tax Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8123/tax-lookup",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input;\n  const usedToday = !parsed.explicit_date_mentioned;\n  const dateToUse = parsed.explicit_date_mentioned || new Date().toISOString().slice(0,10);\n  const HSN_SAC_BY_CATEGORY = {Furniture: '9403', Software: '998313', Services: '998311', Food: '996331', Appliances: '8516'};\n  return JSON.stringify({\n    category: parsed.category_mentioned,\n    hsn_or_sac: HSN_SAC_BY_CATEGORY[parsed.category_mentioned] || '',\n    invoice_date: dateToUse,\n    vendor_state: 'Karnataka',\n    office_state: 'Karnataka',\n    needs_tds: true,\n    _used_today_fallback: usedToday,\n    _date_used: dateToUse\n  });\n})() }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "narrate_hypothetical",
+      "name": "Narrate Hypothetical",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "REPLACE_WITH_CREDENTIAL_OR_ENV_VAR"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input;\n  const tax = $json;\n  const usedToday = !parsed.explicit_date_mentioned;\n  const dateNote = usedToday\n    ? ('No date was stated in the question, so today\\'s date (' + new Date().toISOString().slice(0,10) + ') was assumed -- say this explicitly.')\n    : ('The question specified the date ' + parsed.explicit_date_mentioned + ' -- use that date, do not mention an assumption.');\n  return JSON.stringify({\n    model: \"claude-sonnet-4-5-20250929\",\n    max_tokens: 300,\n    messages: [{role:\"user\", content:\n      \"Write a short (2-3 sentence) plain-language answer to a general (non-vendor-specific) tax-rate question, using ONLY the rate and figures in this JSON -- never invent one. This is a category-level rate, not tied to any specific transaction, so do NOT state a CGST/SGST/IGST split (that depends on a specific vendor and office, which aren't known here). \" + dateNote + \" Category: \" + parsed.category_mentioned + \". Tax lookup result: \" + JSON.stringify(tax)\n    }]\n  });\n})() }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "check_narration_h",
+      "name": "Check Narration H",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8123/check-narration",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const t = $('Category Tax Lookup').first().json;\n  const nums = [];\n  if (t.gst && t.gst.rate_pct !== null && t.gst.rate_pct !== undefined) nums.push(t.gst.rate_pct);\n  if (t.tds && t.tds.rate_pct !== null && t.tds.rate_pct !== undefined) nums.push(t.tds.rate_pct);\n  return JSON.stringify({ narrative_text: $json.content[0].text, structured_values: nums });\n})() }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "guard_if_h",
+      "name": "Guard Passed H?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        500
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.passed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_ok_h",
+      "name": "Respond OK Hypothetical",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2340,
+        460
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ narrative: $('Narrate Hypothetical').first().json.content[0].text, evidence: $('Category Tax Lookup').first().json, guard: 'passed', note: 'category-level answer, not tied to a specific vendor or transaction' }) }}"
+      }
+    },
+    {
+      "id": "respond_fallback_h",
+      "name": "Respond Fallback H",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2340,
+        620
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ (() => { const t = $('Category Tax Lookup').first().json; return JSON.stringify({ narrative: 'Applicable GST rate: ' + (t.gst ? t.gst.rate_pct : 'unknown') + '%. [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed result directly.]', evidence: t, guard: 'failed_fallback_used' }); })() }}"
+      }
+    },
+    {
+      "id": "respond_not_found",
+      "name": "Respond Not Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        700
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'not_found', message: 'No vendor matching \\'' + $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.vendor_name_mentioned + '\\' was found, and no purchase category was identifiable either -- cannot answer without guessing.' }) }}"
       }
     }
   ],
@@ -270,7 +522,25 @@
       "main": [
         [
           {
+            "node": "Intent Supported?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Supported?": {
+      "main": [
+        [
+          {
             "node": "Resolve Vendor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Unsupported",
             "type": "main",
             "index": 0
           }
@@ -281,7 +551,25 @@
       "main": [
         [
           {
+            "node": "Vendor Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vendor Found?": {
+      "main": [
+        [
+          {
             "node": "Retrieve Facts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Category Mentioned?",
             "type": "main",
             "index": 0
           }
@@ -355,6 +643,75 @@
         [
           {
             "node": "Respond Fallback (templated)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Category Mentioned?": {
+      "main": [
+        [
+          {
+            "node": "Category Tax Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Category Tax Lookup": {
+      "main": [
+        [
+          {
+            "node": "Narrate Hypothetical",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Narrate Hypothetical": {
+      "main": [
+        [
+          {
+            "node": "Check Narration H",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Narration H": {
+      "main": [
+        [
+          {
+            "node": "Guard Passed H?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guard Passed H?": {
+      "main": [
+        [
+          {
+            "node": "Respond OK Hypothetical",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Fallback H",
             "type": "main",
             "index": 0
           }

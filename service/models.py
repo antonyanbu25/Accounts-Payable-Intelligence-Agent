@@ -94,6 +94,8 @@ class DiffResponse(BaseModel):
     blocked: bool
     blocked_reason: str = ""
     fields: list[FieldDiffModel]
+    eligible: bool = True
+    eligibility_reasons: list[str] = []
 
 
 class NarrationCheckRequest(BaseModel):

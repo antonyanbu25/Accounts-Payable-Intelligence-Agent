@@ -173,6 +173,14 @@ FIXTURES = {
             "tds_amount": 11000.00, "net_payable_claimed": 118800.00,
         },
     },
+    "🚫 Correct numbers, but vendor is blocked (INV-24)": {
+        "invoice_id": 24,
+        "submitted_advice": {
+            "base_amount": 30000.00, "category": "Services",
+            "gst_rate_pct": 18.0, "gst_cgst": 2700.00, "gst_sgst": 2700.00,
+            "tds_amount": 3000.00, "net_payable_claimed": 32400.00,
+        },
+    },
 }
 
 with tab_validate:
@@ -259,6 +267,13 @@ with tab_validate:
                 else:
                     st.error("❌ Divergence found")
                     st.write(result.get("verdict", ""))
+
+                # Deliberately separate from the numeric verdict above: whether
+                # the numbers are correct is a different question from whether
+                # this payment is actually clear to release.
+                if not diff.get("eligible", True):
+                    st.error("🚫 **NOT CLEAR TO PAY** — regardless of whether the numbers above match:\n\n"
+                              + "\n".join(f"- {r}" for r in diff.get("eligibility_reasons", [])))
 
                 if diff.get("fields"):
                     st.write("**Field-by-field comparison:**")

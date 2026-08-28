@@ -37,7 +37,7 @@ PARSE_INTENT_BODY_EXPR = """={{ JSON.stringify({
         vendor_name_mentioned: {type: "string", description: "The vendor name as mentioned in the question, verbatim, or empty string if the question is about a purchase category in general rather than a specific vendor."},
         invoice_id_mentioned: {type: ["integer","null"], description: "If the question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12). If no specific invoice is referenced, use null -- do not guess one."},
         category_mentioned: {type: ["string","null"], enum: ["Furniture","Software","Services","Food","Appliances",null], description: "If the question is about a purchase category in general (no specific vendor named), which of these fixed categories it refers to. Null if a specific vendor was named instead, or if no category is identifiable."},
-        explicit_date_mentioned: {type: ["string","null"], description: "If the question states a specific date (e.g. '1 September 2025'), the ISO date YYYY-MM-DD. Null if no date is stated -- do not default to today yourself, that is handled downstream."}
+        explicit_date_mentioned: {type: ["string","null"], description: "If the question states ANY date reference -- a full date ('1 September 2025' -> 2025-09-01), or just a bare year ('in 2010', 'during 2018') -> use January 1 of that year (2010-01-01, 2018-01-01). Null ONLY if no date or year is mentioned at all -- do not default to today yourself, that is handled downstream."}
       },
       required: ["intent","vendor_name_mentioned","invoice_id_mentioned","category_mentioned","explicit_date_mentioned"]
     }
@@ -271,7 +271,12 @@ nodes = [
     },
     http_node("Parse Intent", "https://api.anthropic.com/v1/messages", PARSE_INTENT_BODY_EXPR,
               "parse_intent", 260, 400, anthropic_headers),
-    postgres_node("Resolve Vendor", RESOLVE_VENDOR_SQL, "resolve_vendor", 520, 400, always_output=True),
+    if_node("Intent Supported?", "intent_supported_if", 400, 400,
+            "={{ $json.content.find(c => c.type === 'tool_use').input.intent }}",
+            "unsupported", "string", "notEquals"),
+    respond_node("Respond Unsupported", "respond_unsupported", 520, 620,
+        "={{ JSON.stringify({ error: 'unsupported', message: 'This assistant only answers questions about vendor balances and tax treatment in the accounts payable system -- it can\\'t help with that.' }) }}"),
+    postgres_node("Resolve Vendor", RESOLVE_VENDOR_SQL, "resolve_vendor", 660, 400, always_output=True),
     if_node("Vendor Found?", "vendor_found_if", 780, 400,
             "={{ $json.vendor_id }}", "", "string", "notEmpty"),
 
@@ -310,7 +315,9 @@ nodes = [
 
 connections = {
     "UC1 Webhook": {"main": [[{"node": "Parse Intent", "type": "main", "index": 0}]]},
-    "Parse Intent": {"main": [[{"node": "Resolve Vendor", "type": "main", "index": 0}]]},
+    "Parse Intent": {"main": [[{"node": "Intent Supported?", "type": "main", "index": 0}]]},
+    "Intent Supported?": {"main": [[{"node": "Resolve Vendor", "type": "main", "index": 0}],
+                                    [{"node": "Respond Unsupported", "type": "main", "index": 0}]]},
     "Resolve Vendor": {"main": [[{"node": "Vendor Found?", "type": "main", "index": 0}]]},
     "Vendor Found?": {"main": [[{"node": "Retrieve Facts", "type": "main", "index": 0}],
                                 [{"node": "Category Mentioned?", "type": "main", "index": 0}]]},

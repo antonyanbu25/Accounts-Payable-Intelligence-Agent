@@ -17,6 +17,10 @@ import re
 _DATE_PATTERNS = [
     r"\b\d{1,2}[-/](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/]\d{2,4}\b",
     r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s*,?\s*\d{4}\b",
+    # Month DD, YYYY (US convention -- day AFTER the month name, e.g. "June
+    # 15, 2030"). Found by live testing: only the DD-Month-YYYY order was
+    # handled before, leaving a bare day number unstripped and flagged.
+    r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\s*,?\s*\d{4}\b",
     r"\b\d{4}-\d{2}-\d{2}\b",
     r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
     # bare 4-digit year (e.g. "Income Tax Act, 1961", "Notification ... 2017")

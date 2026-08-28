@@ -33,6 +33,15 @@ def test_section_reference_not_flagged():
     assert numbers == [], f"section codes leaked through as numbers: {numbers}"
 
 
+def test_us_style_month_day_year_date_not_flagged():
+    """Found by live recruiter-mindset testing: 'June 15, 2030' (day AFTER
+    the month name) left the bare day '15' unstripped and wrongly flagged,
+    even though the DD-Month-YYYY order was already handled."""
+    text = "As of June 15, 2030, Furniture attracts GST at an aggregate rate of 18%."
+    numbers = extract_numbers(text)
+    assert numbers == [18.0], numbers
+
+
 def test_bare_year_and_classification_code_not_flagged():
     """Found by live Day-5 testing: 'Income Tax Act, 1961' and 'SAC 998313'
     were both being flagged as invented figures -- neither is a monetary

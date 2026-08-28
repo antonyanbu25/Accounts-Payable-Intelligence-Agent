@@ -63,6 +63,23 @@ def test_category_conflict_blocks_validation_entirely():
     assert diff.overall_match is False
 
 
+def test_blocked_vendor_flagged_even_when_numbers_match():
+    """Found by recruiter-mindset live testing: a numerically-correct advice
+    for a blocked vendor must still surface ineligibility -- an accountant
+    seeing 'numbers correct' with no other signal could release a payment
+    that should never go out."""
+    facts = LedgerFacts(base_amount=30000.00, vendor_status="blocked",
+                         po_amount=30000.00, receipt_amount=30000.00)
+    tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=10.0, tds_section="194J", split_type="CGST_SGST")
+    true_result = compute(facts, tax)
+    advice = {"base_amount": 30000.00, "gst_rate_pct": 18.0, "gst_cgst": 2700.00, "gst_sgst": 2700.00,
+              "tds_amount": 3000.00, "net_payable_claimed": true_result.net_disbursement_due}
+    diff = diff_advice(true_result, advice)
+    assert diff.overall_match is True  # the NUMBERS are genuinely correct
+    assert diff.eligible is False       # but the payment is not clear to release
+    assert any("blocked" in r for r in diff.eligibility_reasons)
+
+
 def test_tolerance_absorbs_one_rupee_rounding_noise():
     facts = LedgerFacts(base_amount=100000.00, po_amount=100000.00, receipt_amount=100000.00)
     tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=10.0, tds_section="194J", split_type="CGST_SGST")

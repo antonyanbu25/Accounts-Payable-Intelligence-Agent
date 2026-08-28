@@ -137,6 +137,7 @@ def do_diff(req: DiffRequest):
         overall_match=result.overall_match, blocked=result.blocked, blocked_reason=result.blocked_reason,
         fields=[FieldDiffModel(field=f.field, claimed=f.claimed, correct=f.correct, match=f.match, reason=f.reason)
                 for f in result.fields],
+        eligible=result.eligible, eligibility_reasons=result.eligibility_reasons,
     )
 
 

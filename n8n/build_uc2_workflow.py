@@ -106,7 +106,7 @@ NARRATE_DIFF_BODY_EXPR = """={{ JSON.stringify({
   model: "claude-sonnet-4-5-20250929",
   max_tokens: 500,
   messages: [{role:"user", content:
-    "You are validating an accountant's payment advice against an independently-computed true result. Write a short, plain-language verdict (3-6 sentences): state clearly whether the advice is CORRECT or has DIVERGENCES, and for every mismatched field state what was claimed, what's correct, and briefly why -- using ONLY the numbers and reasons in this JSON, never inventing or altering one. If overall_match is true, say so plainly and do not invent a divergence. Diff result: " + JSON.stringify($json)
+    "You are validating an accountant's payment advice against an independently-computed true result. Write a short, plain-language verdict (3-7 sentences): state clearly whether the advice's NUMBERS are CORRECT or have DIVERGENCES, and for every mismatched field state what was claimed, what's correct, and briefly why -- using ONLY the numbers and reasons in this JSON, never inventing or altering one. If overall_match is true, say so plainly and do not invent a divergence. SEPARATELY and REGARDLESS of whether the numbers match: if eligible is false, you MUST prominently warn that this payment is NOT clear to release and state every reason in eligibility_reasons -- a numerically-correct advice for an ineligible payment (blocked vendor, cancelled PO, failed 3-way match) is still not safe to pay, and this warning must never be omitted or softened. Diff result: " + JSON.stringify($json)
   }]
 }) }}"""
 
@@ -198,7 +198,7 @@ nodes = [
         "id": "respond_fallback", "name": "Respond Fallback (templated)", "type": "n8n-nodes-base.respondToWebhook",
         "typeVersion": 1.1, "position": [2340, 300],
         "parameters": {"respondWith": "json", "responseBody":
-            "={{ (() => { const d = $('Diff').first().json; const mism = d.fields.filter(f => !f.match).map(f => f.field + ': claimed ' + f.claimed + ', correct ' + f.correct); return JSON.stringify({ verdict: d.overall_match ? 'Advice matches the independently computed result.' : ('Advice diverges on: ' + mism.join('; ') + '. [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed diff directly.]'), diff: d, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"},
+            "={{ (() => { const d = $('Diff').first().json; const mism = d.fields.filter(f => !f.match).map(f => f.field + ': claimed ' + f.claimed + ', correct ' + f.correct); const numVerdict = d.overall_match ? 'Advice matches the independently computed result.' : ('Advice diverges on: ' + mism.join('; ') + '.'); const eligVerdict = d.eligible ? '' : (' ⚠ NOT CLEAR TO PAY regardless of the numbers above: ' + d.eligibility_reasons.join('; ') + '.'); return JSON.stringify({ verdict: numVerdict + eligVerdict + ' [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed diff directly.]', diff: d, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"},
     },
 ]
 

@@ -33,6 +33,15 @@ class DiffResult:
     fields: list = field(default_factory=list)
     blocked: bool = False  # true if the true result itself has refused tax treatment
     blocked_reason: str = ""
+    # Deliberately separate from overall_match: whether the ADVICE'S NUMBERS
+    # are correct is a different question from whether this PAYMENT is
+    # actually clear to release (vendor blocked, PO cancelled, 3-way match
+    # failed). Found by recruiter-mindset testing: a diff that only reports
+    # numeric correctness lets a fully "correct" advice for an ineligible
+    # payment go through with no warning -- a real AP control failure, not
+    # just a missing nicety. Always populated, regardless of overall_match.
+    eligible: bool = True
+    eligibility_reasons: list = field(default_factory=list)
 
 
 def _compare(field_name: str, claimed, correct, reason_if_mismatch: str) -> FieldDiff:
@@ -45,6 +54,9 @@ def _compare(field_name: str, claimed, correct, reason_if_mismatch: str) -> Fiel
 
 
 def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: str = "") -> DiffResult:
+    is_eligible = true_result.eligibility == "eligible"
+    eligibility_reasons = [] if is_eligible else (true_result.eligibility_reasons or [true_result.eligibility])
+
     if true_result.tax_treatment_refused:
         return DiffResult(
             overall_match=False, blocked=True,
@@ -52,6 +64,7 @@ def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: st
                              "(category conflict between the PO and the invoice, no defensible rule to pick one). "
                              "The advice's tax-dependent fields cannot be checked until this is resolved."),
             fields=[_compare("base_amount", submitted.get("base_amount"), true_result.pre_tax_ledger_position or true_result.base_amount, "")],
+            eligible=is_eligible, eligibility_reasons=eligibility_reasons,
         )
 
     gst = true_result.gst or {}
@@ -83,4 +96,5 @@ def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: st
         fields.append(FieldDiff(field="category", claimed=None, correct=None, match=False, reason=category_reason))
 
     overall = all(f.match for f in fields)
-    return DiffResult(overall_match=overall, fields=fields)
+    return DiffResult(overall_match=overall, fields=fields, eligible=is_eligible,
+                       eligibility_reasons=eligibility_reasons)
