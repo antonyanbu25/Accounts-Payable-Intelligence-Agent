@@ -33,9 +33,43 @@ st.set_page_config(page_title="AP Intelligence Agent", page_icon="📒", layout=
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
+/* layout="wide" removes Streamlit's own max-width; re-cap it here so
+   content reads as a centered column on a wide viewer instead of running
+   edge-to-edge (which scans as "left-aligned" once the window is wide). */
+[data-testid="stMainBlockContainer"] {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
 /* Currency/ID figures read as a ledger, not chat prose */
 [data-testid="stMetricValue"] {
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Subtle elevation instead of a flat page -- cards sit visibly above the
+   off-white page background (see config.toml) via a soft shadow, not just
+   a flat border. */
+[data-testid="stMetric"], [data-testid="stAlertContainer"],
+[data-testid="stExpander"], [data-testid="stBaseButton-secondary"],
+[data-testid="stTableStyledTable"] {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+}
+[data-testid="stExpander"], [data-testid="stBaseButton-secondary"] {
+    border-radius: 8px;
+}
+
+/* The chat input is the primary interaction surface for a conversational
+   agent -- give it real visual weight (size, shadow, a teal-tinted border)
+   instead of a thin default bar that reads as an afterthought. */
+[data-testid="stChatInput"] {
+    box-shadow: 0 2px 10px rgba(61,107,111,0.12), 0 1px 3px rgba(0,0,0,0.06);
+    border: 1.5px solid #b9d2d3;
+    border-radius: 12px;
+}
+[data-testid="stChatInputTextArea"] {
+    font-size: 1.05rem;
+    padding-top: 14px;
+    padding-bottom: 14px;
 }
 
 /* Restrained, harmonized alert palette (this app pins base="light" in

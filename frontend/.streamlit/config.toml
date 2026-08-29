@@ -5,7 +5,10 @@
 [theme]
 base = "light"
 primaryColor = "#3d6b6f"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f4f6f6"
+# Slightly off-white, not pure #ffffff -- gives card-like elements (metrics,
+# alerts, the chat input) something to visibly sit above via box-shadow in
+# the CSS block in app.py. Pure white-on-white has no room for elevation.
+backgroundColor = "#f6f7f7"
+secondaryBackgroundColor = "#eef1f1"
 textColor = "#1a1f1f"
 font = "sans serif"
