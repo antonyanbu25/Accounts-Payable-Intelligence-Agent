@@ -127,13 +127,31 @@ def _handle_category_only(parsed: dict) -> dict:
 
 def _handle_vendor_details(vendor_id: int) -> dict:
     details = db.retrieve_vendor_details(vendor_id)
+
+    # Found by an independent recruiter-style regression eval: asking about
+    # a blocked vendor's "payment eligibility" with no invoice named (the
+    # only case this branch handles -- see handle_uc1_ask's dispatch,
+    # naming an invoice routes to _handle_single_invoice instead, which
+    # already computes real eligibility) got a correct but implicit answer
+    # -- it reported vendor_status: blocked without stating what that means
+    # for payment. This branch has no PO/receipt/3-way-match join and
+    # structurally can't compute invoice-level eligibility (a deliberate,
+    # already-established scope boundary), but "vendor blocked" alone is
+    # already sufficient to say plainly that nothing can be paid to them --
+    # no computation needed for that specific case.
+    blocked_note = ""
+    if details.get("vendor_status") == "blocked":
+        blocked_note = (" IMPORTANT: this vendor's status is BLOCKED -- you MUST state plainly that any "
+                         "pending or future payment to this vendor cannot proceed until this is resolved, "
+                         "regardless of how correct any individual invoice's numbers look.")
+
     prompt = ("Write a short (2-4 sentence), plain-language answer to a general question about a vendor (not "
               "a balance/tax calculation), using ONLY the facts in this JSON -- never invent or alter a "
               "figure, and never compute a total. If the vendor's onboarding state differs from its "
               "GSTIN-registered state, mention this briefly as a data-quality note (GSTIN is the authoritative "
               "one for tax purposes, but both are worth surfacing here). If the vendor has multiple invoices, "
               "summarize them briefly (count, and category/status pattern) rather than listing every field of "
-              "every one -- the evidence panel already shows the full list. Vendor details: "
+              "every one -- the evidence panel already shows the full list." + blocked_note + " Vendor details: "
               + json.dumps(details, default=str))
     narrative = call_text(prompt, max_tokens=400)
 
@@ -152,8 +170,10 @@ def _handle_vendor_details(vendor_id: int) -> dict:
     if guard.passed:
         return {"narrative": narrative, "evidence": details, "guard": "passed",
                 "note": "general vendor information, not a balance/tax calculation"}
+    blocked_suffix = (" ⚠ Status is BLOCKED -- no payment to this vendor can proceed until this is resolved."
+                       if details.get("vendor_status") == "blocked" else "")
     return {"narrative": (f"{details['legal_name']} -- status: {details['vendor_status']}, {len(invoices)} "
-                           f"invoice(s) on file.{GUARD_FALLBACK_SUFFIX}"),
+                           f"invoice(s) on file.{blocked_suffix}{GUARD_FALLBACK_SUFFIX}"),
             "evidence": details, "guard": "failed_fallback_used"}
 
 
@@ -229,17 +249,38 @@ def _handle_single_invoice(parsed: dict, vendor: dict) -> dict:
                          f"₹{_num(computed.payments_made)}. You MUST state this breakdown plainly (which of "
                          "these it is and how much) so the net figure is never left looking unexplained.")
 
+    # Found by an independent recruiter-style regression eval: UC2's
+    # narration has always had a MUST-state instruction for a real,
+    # non-zero unapplied advance (see uc2_orchestration.py's
+    # NARRATE_DIFF_PROMPT_PREFIX) -- UC1's never did, only the settled-
+    # amount note above. Without it, the LLM was handed
+    # unapplied_advance_advisory in the JSON but never told it must mention
+    # it, so it sometimes did and sometimes didn't -- and even when it
+    # tried, the guard (see nums below, before this fix) had no entry for
+    # this number and would reject the narration as an "unverified" figure,
+    # forcing the templated fallback on a case that should have passed
+    # cleanly. This predates the n8n-removal migration -- the original
+    # n8n/build_uc1_workflow.py NARRATE_BODY_EXPR had the identical gap.
+    unapplied_note = ""
+    if computed.unapplied_advance_advisory:
+        unapplied_note = (f" ALSO SEPARATELY: a separate unapplied advance of "
+                           f"₹{_num(computed.unapplied_advance_advisory)} exists against this vendor/PO and has "
+                           "NOT been netted into net_disbursement_due above -- you MUST state this plainly as "
+                           "its own note, since releasing this payment without accounting for it carries a "
+                           "real overpayment risk. Never omit or soften this note.")
+
     prompt = ("Write a short (2-4 sentence), plain-language answer to an accounts-payable question, using "
               "ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: "
               f"{facts['legal_name']}. Onboarding state on file: {facts['onboarding_state']} (vs. "
               f"GSTIN-registered state used for tax: {facts['registered_state']} -- mention this discrepancy "
-              "briefly if they differ)." + ambiguity_note + settled_note + " Structured result: "
+              "briefly if they differ)." + ambiguity_note + settled_note + unapplied_note + " Structured result: "
               + json.dumps(computed.model_dump()))
     narrative = call_text(prompt, max_tokens=400)
 
     nums = [computed.base_amount, computed.gross_liability, computed.net_disbursement_due, computed.tds_amount,
             computed.pre_tax_ledger_position, facts["invoice_id"], facts["vendor_open_invoice_count"],
-            computed.advances_applied, computed.credits_applied, computed.payments_made]
+            computed.advances_applied, computed.credits_applied, computed.payments_made,
+            computed.unapplied_advance_advisory]
     if computed.gst:
         nums.extend([computed.gst.get("gst_amount"), computed.gst.get("cgst"), computed.gst.get("sgst"), computed.gst.get("igst")])
     nums = [n for n in nums if n is not None]
@@ -248,8 +289,13 @@ def _handle_single_invoice(parsed: dict, vendor: dict) -> dict:
     if guard.passed:
         return {"narrative": narrative, "evidence": computed.model_dump(), "tax_evidence": tax.model_dump(),
                 "guard": "passed"}
+    advisory_suffix = ""
+    if computed.unapplied_advance_advisory:
+        advisory_suffix = (f" ⚠ Advisory: an unapplied advance of ₹{_num(computed.unapplied_advance_advisory)} "
+                            "exists against this vendor/PO and has NOT been netted here -- a possible "
+                            "overpayment risk if missed.")
     fallback = (f"Net disbursement due: {_num(computed.net_disbursement_due)} "
-                f"(eligibility: {computed.eligibility}).{GUARD_FALLBACK_SUFFIX}")
+                f"(eligibility: {computed.eligibility}).{advisory_suffix}{GUARD_FALLBACK_SUFFIX}")
     return {"narrative": fallback, "evidence": computed.model_dump(), "tax_evidence": tax.model_dump(),
             "guard": "failed_fallback_used"}
 

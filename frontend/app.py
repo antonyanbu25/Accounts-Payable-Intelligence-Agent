@@ -1706,6 +1706,45 @@ with tab_browse:
         """)
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True, height=260)
 
+        # Advances/payments/credit notes -- the engine already reasons over
+        # these correctly (an unapplied advance surfaces as an advisory on
+        # both tabs, a settled payment is netted into net_disbursement_due
+        # and disclosed in the narration), but they were previously
+        # invisible to a reviewer here: the only way to discover they exist
+        # was to trigger a validation that happened to reference one. Same
+        # Source B (SAP-style Vendor & Payments DB), same read-only pattern
+        # as Vendors/Invoices above.
+        _section_header("Advances", "Source B · Postgres")
+        cur.execute("""
+            SELECT a.advance_id, v.legal_name AS vendor, a.po_id, a.amount,
+                   a.advance_date, a.applied_against_invoice_id
+            FROM advance a
+            JOIN vendor_master v ON a.vendor_id = v.vendor_id
+            ORDER BY a.advance_id;
+        """)
+        st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True, height=260)
+
+        _section_header("Payments", "Source B · Postgres")
+        cur.execute("""
+            SELECT p.payment_id, p.invoice_id, v.legal_name AS vendor,
+                   p.amount, p.payment_date, p.type
+            FROM payment p
+            JOIN invoice i ON p.invoice_id = i.invoice_id
+            JOIN vendor_master v ON i.vendor_id = v.vendor_id
+            ORDER BY p.payment_id;
+        """)
+        st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True, height=260)
+
+        _section_header("Credit Notes", "Source B · Postgres")
+        cur.execute("""
+            SELECT c.credit_id, v.legal_name AS vendor, c.invoice_id,
+                   c.amount, c.reason, c.credit_date
+            FROM credit_note c
+            JOIN vendor_master v ON c.vendor_id = v.vendor_id
+            ORDER BY c.credit_id;
+        """)
+        st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True, height=260)
+
         _section_header("Offices", "Source A · Postgres")
         cur.execute("SELECT office_id, name, city, state FROM office ORDER BY office_id;")
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True, height=260)

@@ -250,6 +250,128 @@ def test_single_invoice_guard_fallback(monkeypatch):
     assert "108000" in result["narrative"]
 
 
+def test_unapplied_advance_instructed_and_allowed_by_guard(monkeypatch):
+    """Regression test for a real gap found by an independent recruiter-
+    style eval: UC1's narration never had a MUST-state instruction for
+    unapplied_advance_advisory (unlike UC2, and unlike UC1's own settled-
+    amount note), so the LLM was handed the number with no instruction to
+    mention it, and even a compliant mention would have been rejected by
+    the guard (the number wasn't in structured_values either)."""
+    facts = _facts()
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_invoice_facts_uc1", lambda vid, iid: facts)
+    monkeypatch.setattr(uc1_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc1_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=85000.0, gst={"gst_amount": 15300.0, "cgst": None, "sgst": None, "igst": 15300.0, "split_type": "IGST"},
+        tds_amount=0.0, gross_liability=100300.0, net_disbursement_due=100300.0,
+        pre_tax_ledger_position=85000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False,
+        unapplied_advance_advisory=15000.0))
+    captured_prompt = {}
+
+    def fake_call_text(prompt, max_tokens):
+        captured_prompt["text"] = prompt
+        return f"Net payable is 100300, with an unapplied advance of 15000 against this vendor."
+
+    monkeypatch.setattr(uc1_orchestration, "call_text", fake_call_text)
+    captured_guard_req = {}
+
+    def fake_guard(req):
+        captured_guard_req["values"] = req.structured_values
+        return NarrationCheckResponse(passed=True, numbers_found_in_narrative=[], numbers_not_in_structured_result=[])
+
+    monkeypatch.setattr(uc1_orchestration, "check_narration_endpoint", fake_guard)
+
+    result = uc1_orchestration._handle_single_invoice(
+        {"invoice_id_mentioned": 9}, {"vendor_id": 1, "legal_name": "Bright Office Furnishings"})
+    assert "unapplied advance" in captured_prompt["text"].lower()
+    assert "MUST state this plainly" in captured_prompt["text"]
+    assert 15000.0 in captured_guard_req["values"]
+    assert result["guard"] == "passed"
+
+
+def test_unapplied_advance_fallback_states_it_too(monkeypatch):
+    """The advisory must survive into the templated fallback text as well,
+    not only the successful-narration path -- matching UC2's existing
+    fallback pattern."""
+    facts = _facts()
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_invoice_facts_uc1", lambda vid, iid: facts)
+    monkeypatch.setattr(uc1_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc1_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=85000.0, gst={"gst_amount": 15300.0, "cgst": None, "sgst": None, "igst": 15300.0, "split_type": "IGST"},
+        tds_amount=0.0, gross_liability=100300.0, net_disbursement_due=100300.0,
+        pre_tax_ledger_position=85000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False,
+        unapplied_advance_advisory=15000.0))
+    monkeypatch.setattr(uc1_orchestration, "call_text", lambda prompt, max_tokens: "hallucinated nonsense")
+    monkeypatch.setattr(uc1_orchestration, "check_narration_endpoint", lambda req: NarrationCheckResponse(
+        passed=False, numbers_found_in_narrative=[], numbers_not_in_structured_result=[]))
+
+    result = uc1_orchestration._handle_single_invoice(
+        {"invoice_id_mentioned": 9}, {"vendor_id": 1, "legal_name": "Bright Office Furnishings"})
+    assert result["guard"] == "failed_fallback_used"
+    assert "15000" in result["narrative"]
+    assert "overpayment risk" in result["narrative"]
+
+
+def test_blocked_vendor_lookup_gets_narration_nudge(monkeypatch):
+    """Regression test for the second finding from the same eval: a
+    vendor-lookup question (no invoice named) about a blocked vendor got a
+    correct-but-implicit answer. This branch structurally can't compute
+    invoice-level eligibility (no PO/receipt join), but "vendor blocked"
+    alone should be stated plainly as blocking any payment."""
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_vendor_details", lambda vid: {
+        "legal_name": "Coastal Facility Services", "vendor_status": "blocked", "payment_terms": "Net 45",
+        "gstin": "X", "registered_state": "Karnataka", "pan": "Y", "onboarding_state": "Karnataka",
+        "onboarding_status": "approved", "onboarding_date": "2024-01-02", "invoices": [],
+    })
+    captured_prompt = {}
+
+    def fake_call_text(prompt, max_tokens):
+        captured_prompt["text"] = prompt
+        return "Coastal Facility Services is blocked; no payment can proceed."
+
+    monkeypatch.setattr(uc1_orchestration, "call_text", fake_call_text)
+    _passing_guard(monkeypatch)
+
+    result = uc1_orchestration._handle_vendor_details(1)
+    assert "BLOCKED" in captured_prompt["text"]
+    assert "MUST state plainly" in captured_prompt["text"]
+    assert result["guard"] == "passed"
+
+
+def test_active_vendor_lookup_gets_no_blocked_nudge(monkeypatch):
+    """The blocked-vendor instruction must not appear for an active vendor."""
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_vendor_details", lambda vid: {
+        "legal_name": "TechNova Software Solutions Pvt Ltd", "vendor_status": "active", "payment_terms": "Net 30",
+        "gstin": "X", "registered_state": "Karnataka", "pan": "Y", "onboarding_state": "Karnataka",
+        "onboarding_status": "approved", "onboarding_date": "2024-01-02", "invoices": [],
+    })
+    captured_prompt = {}
+
+    def fake_call_text(prompt, max_tokens):
+        captured_prompt["text"] = prompt
+        return "TechNova is an active vendor."
+
+    monkeypatch.setattr(uc1_orchestration, "call_text", fake_call_text)
+    _passing_guard(monkeypatch)
+
+    uc1_orchestration._handle_vendor_details(1)
+    assert "BLOCKED" not in captured_prompt["text"]
+
+
+def test_blocked_vendor_fallback_warns_too(monkeypatch):
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_vendor_details", lambda vid: {
+        "legal_name": "Coastal Facility Services", "vendor_status": "blocked", "payment_terms": "Net 45",
+        "gstin": "X", "registered_state": "Karnataka", "pan": "Y", "onboarding_state": "Karnataka",
+        "onboarding_status": "approved", "onboarding_date": "2024-01-02", "invoices": [],
+    })
+    monkeypatch.setattr(uc1_orchestration, "call_text", lambda prompt, max_tokens: "hallucinated")
+    monkeypatch.setattr(uc1_orchestration, "check_narration_endpoint", lambda req: NarrationCheckResponse(
+        passed=False, numbers_found_in_narrative=[], numbers_not_in_structured_result=[]))
+
+    result = uc1_orchestration._handle_vendor_details(1)
+    assert result["guard"] == "failed_fallback_used"
+    assert "BLOCKED" in result["narrative"]
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
