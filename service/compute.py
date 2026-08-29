@@ -172,6 +172,18 @@ class ComputeResult:
     unapplied_advance_advisory: Optional[float]
     category_conflict: Optional[CategoryConflict]
     tax_treatment_refused: bool
+    # Previously computed internally (folded into pre_tax_ledger_position /
+    # net_disbursement_due) but never returned on their own -- found via an
+    # independent recruiter-style evaluation: a partial-payment invoice
+    # (TechNova INV-9, payments_made=120000) produced a correct but
+    # unexplainable net_disbursement_due, because neither the narration LLM
+    # nor the evidence panel ever received the actual figure driving the
+    # gap. Defaults so existing callers that don't pass these (e.g. UC2's
+    # /diff reconstructing a ComputeResult from a raw /compute response
+    # dict) keep working unchanged.
+    advances_applied: float = 0.0
+    credits_applied: float = 0.0
+    payments_made: float = 0.0
 
 
 def compute(facts: LedgerFacts, tax: Optional[TaxDetermination],
@@ -212,6 +224,8 @@ def compute(facts: LedgerFacts, tax: Optional[TaxDetermination],
             unapplied_advance_advisory=facts.unapplied_advances or None,
             category_conflict=category_conflict,
             tax_treatment_refused=True,
+            advances_applied=facts.advances_applied, credits_applied=facts.credits_applied,
+            payments_made=facts.payments_made,
         )
 
     assert tax is not None, "tax determination required when there is no category conflict"
@@ -232,4 +246,6 @@ def compute(facts: LedgerFacts, tax: Optional[TaxDetermination],
         unapplied_advance_advisory=facts.unapplied_advances or None,
         category_conflict=None,
         tax_treatment_refused=False,
+        advances_applied=facts.advances_applied, credits_applied=facts.credits_applied,
+        payments_made=facts.payments_made,
     )

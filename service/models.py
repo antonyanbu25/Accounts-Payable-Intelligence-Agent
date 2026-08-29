@@ -64,6 +64,13 @@ class ComputeResponse(BaseModel):
     unapplied_advance_advisory: Optional[float] = None
     category_conflict: Optional[dict] = None
     tax_treatment_refused: bool
+    # Previously computed but never returned -- see compute.py's ComputeResult
+    # for why this matters (a correct net_disbursement_due that nothing could
+    # explain when driven by a partial payment, since this figure was never
+    # visible anywhere outside the opaque netted totals).
+    advances_applied: float = 0.0
+    credits_applied: float = 0.0
+    payments_made: float = 0.0
 
 
 class SubmittedAdvice(BaseModel):

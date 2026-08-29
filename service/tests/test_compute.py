@@ -182,6 +182,36 @@ def test_unapplied_advance_surfaced_but_not_netted():
     assert r.net_disbursement_due == r.gross_liability  # NOT reduced by the unapplied advance
 
 
+def test_payments_made_surfaced_on_result():
+    """Regression test for a real gap found by an independent recruiter-style
+    evaluation: TechNova's INV-9 (base 200,000, payments_made 120,000) produced
+    a correct net_disbursement_due (84,000) that nothing could explain -- the
+    figure driving the gap was computed internally but never returned on
+    ComputeResult/ComputeResponse, only folded into the opaque netted totals.
+    advances_applied/credits_applied/payments_made must now be visible on
+    their own, matching the real numbers used to compute the netted figures."""
+    facts = LedgerFacts(base_amount=200000.00, payments_made=120000.00, po_amount=200000.00, receipt_amount=200000.00)
+    tax = TaxDetermination(gst_rate_pct=12.0, tds_rate_pct=10.0, tds_section="194J", split_type="CGST_SGST")
+    r = compute(facts, tax)
+    assert r.payments_made == 120000.00
+    assert r.advances_applied == 0.0
+    assert r.credits_applied == 0.0
+    # Confirms these are the exact figures netted into the headline number,
+    # not just present-but-disconnected values.
+    assert r.net_disbursement_due == r.gross_liability - r.tds_amount - r.payments_made == 84000.0
+
+
+def test_payments_made_surfaced_even_when_category_conflict_blocks_tax():
+    """The category-conflict branch returns early with no tax figures, but
+    the ledger facts (including payments_made) are still real and should
+    still be visible on the result -- not silently dropped on this path."""
+    facts = LedgerFacts(base_amount=90000.00, credits_applied=5000.00, po_amount=90000.00, receipt_amount=90000.00)
+    conflict = CategoryConflict(po_category="Software", invoice_category="Services")
+    r = compute(facts, tax=None, category_conflict=conflict)
+    assert r.credits_applied == 5000.00
+    assert r.payments_made == 0.0
+
+
 def test_blocked_vendor_not_eligible():
     facts = LedgerFacts(base_amount=30000.00, vendor_status="blocked", po_amount=30000.00, receipt_amount=30000.00)
     tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=10.0, tds_section="194J", split_type="CGST_SGST")

@@ -118,6 +118,9 @@ def do_compute(req: ComputeRequest):
         unapplied_advance_advisory=result.unapplied_advance_advisory,
         category_conflict=(result.category_conflict.__dict__ if result.category_conflict else None),
         tax_treatment_refused=result.tax_treatment_refused,
+        advances_applied=result.advances_applied,
+        credits_applied=result.credits_applied,
+        payments_made=result.payments_made,
     )
 
 
@@ -135,6 +138,8 @@ def do_diff(req: DiffRequest):
         eligibility_reasons=cr.get("eligibility_reasons", []), three_way_match=None,
         unapplied_advance_advisory=cr.get("unapplied_advance_advisory"),
         category_conflict=cr.get("category_conflict"), tax_treatment_refused=cr.get("tax_treatment_refused", False),
+        advances_applied=cr.get("advances_applied", 0.0), credits_applied=cr.get("credits_applied", 0.0),
+        payments_made=cr.get("payments_made", 0.0),
     )
     result = diff_advice(tr, req.submitted_advice.model_dump(), category_reason=req.category_reason or "")
     return DiffResponse(

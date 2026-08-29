@@ -724,6 +724,24 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None, compact
         elif gst:
             st.caption(f"GST split: CGST ₹{gst.get('cgst', 0):,.0f} + SGST ₹{gst.get('sgst', 0):,.0f} (intra-state)")
 
+        # Found by an independent recruiter-style evaluation: a partial-
+        # payment invoice (payments_made > 0) produced a correct
+        # net_disbursement_due that nothing on screen explained -- these
+        # three figures were computed all along but never shown anywhere,
+        # so a reviewer had no way to see why net was lower than
+        # gross_liability minus TDS alone (and the narration itself
+        # couldn't explain it either, until the fix alongside this one).
+        settled_parts = []
+        if evidence.get("advances_applied"):
+            settled_parts.append(f"₹{evidence['advances_applied']:,.0f} advance applied")
+        if evidence.get("credits_applied"):
+            settled_parts.append(f"₹{evidence['credits_applied']:,.0f} credit applied")
+        if evidence.get("payments_made"):
+            settled_parts.append(f"₹{evidence['payments_made']:,.0f} already paid")
+        if settled_parts:
+            st.caption("Already settled against this invoice: " + ", ".join(settled_parts) +
+                       " — netted out of the net disbursement due above.")
+
         st.write(f"**Payment eligibility:** {evidence.get('eligibility')}")
         if evidence.get("unapplied_advance_advisory"):
             st.info(f"⚠️ Advisory: an unapplied advance of ₹{evidence['unapplied_advance_advisory']:,.0f} "

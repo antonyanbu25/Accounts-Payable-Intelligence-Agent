@@ -227,11 +227,25 @@ NARRATE_BODY_EXPR = """={{ (() => {
   const ambiguityNote = ambiguous
     ? (" This vendor has " + f.vendor_open_invoice_count + " open invoices in total, and no specific invoice was named in the question -- this data covers only invoice #" + f.invoice_id + " (the most recent one). You MUST say so explicitly and briefly, so this is never mistaken for the vendor's total balance across all invoices.")
     : "";
+  // Found by an independent recruiter-style evaluation: a partial-payment
+  // invoice (payments_made > 0) produced a correct net_disbursement_due
+  // that nothing explained -- the narration only ever saw the already-
+  // netted pre_tax_ledger_position/net_disbursement_due, never the actual
+  // advances_applied/credits_applied/payments_made driving the gap, so a
+  // direct follow-up asking "why is this lower than expected" couldn't get
+  // a real answer no matter how it was phrased. Disclose plainly whenever
+  // any of the three is non-zero, mirroring the ambiguity-note pattern
+  // above (an explicit MUST-state instruction, not a hope the model infers
+  // it from the raw JSON on its own).
+  const settled = Number($json.advances_applied || 0) + Number($json.credits_applied || 0) + Number($json.payments_made || 0);
+  const settledNote = settled > 0
+    ? (" IMPORTANT: net_disbursement_due is LOWER than gross_liability minus TDS alone because ₹" + settled + " has already been settled against this invoice -- advances applied: ₹" + $json.advances_applied + ", credits applied: ₹" + $json.credits_applied + ", payments already made: ₹" + $json.payments_made + ". You MUST state this breakdown plainly (which of these it is and how much) so the net figure is never left looking unexplained.")
+    : "";
   return JSON.stringify({
     model: "claude-sonnet-4-5-20250929",
     max_tokens: 400,
     messages: [{role:"user", content:
-      "Write a short (2-4 sentence), plain-language answer to an accounts-payable question, using ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: " + f.legal_name + ". Onboarding state on file: " + f.onboarding_state + " (vs. GSTIN-registered state used for tax: " + f.registered_state + " -- mention this discrepancy briefly if they differ)." + ambiguityNote + " Structured result: " + JSON.stringify($json)
+      "Write a short (2-4 sentence), plain-language answer to an accounts-payable question, using ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: " + f.legal_name + ". Onboarding state on file: " + f.onboarding_state + " (vs. GSTIN-registered state used for tax: " + f.registered_state + " -- mention this discrepancy briefly if they differ)." + ambiguityNote + settledNote + " Structured result: " + JSON.stringify($json)
     }]
   });
 })() }}"""
@@ -240,7 +254,8 @@ CHECK_NARRATION_BODY_EXPR = """={{ (() => {
   const c = $('Compute').first().json;
   const f = $('Retrieve Facts').first().json;
   const nums = [c.base_amount, c.gross_liability, c.net_disbursement_due, c.tds_amount, c.pre_tax_ledger_position,
-                Number(f.invoice_id), Number(f.vendor_open_invoice_count)];
+                Number(f.invoice_id), Number(f.vendor_open_invoice_count),
+                c.advances_applied, c.credits_applied, c.payments_made];
   if (c.gst) { nums.push(c.gst.gst_amount, c.gst.cgst, c.gst.sgst, c.gst.igst); }
   return JSON.stringify({
     narrative_text: $json.content[0].text,
@@ -392,7 +407,8 @@ CHECK_NARRATION_COMPARISON_BODY_EXPR = """={{ (() => {
     nums.push(Number(f.invoice_id));
     const c = computeResults[i];
     if (c) {
-      nums.push(c.base_amount, c.gross_liability, c.net_disbursement_due, c.tds_amount, c.pre_tax_ledger_position);
+      nums.push(c.base_amount, c.gross_liability, c.net_disbursement_due, c.tds_amount, c.pre_tax_ledger_position,
+                c.advances_applied, c.credits_applied, c.payments_made);
       if (c.gst) { nums.push(c.gst.gst_amount, c.gst.cgst, c.gst.sgst, c.gst.igst); }
     }
     const t = taxResults[i];
