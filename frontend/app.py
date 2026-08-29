@@ -35,9 +35,14 @@ st.markdown("""
 <style>
 /* layout="wide" removes Streamlit's own max-width; re-cap it here so
    content reads as a centered column on a wide viewer instead of running
-   edge-to-edge (which scans as "left-aligned" once the window is wide). */
+   edge-to-edge (which scans as "left-aligned" once the window is wide).
+   Narrower than a first pass (1200px) -- this app's widest real content
+   (the 2-up metric rows) doesn't need more than ~1000px, and a tighter
+   column reads more intentional. Tabs/buttons stay left-aligned *within*
+   this centered column -- centering each individually would look worse
+   than a centered column of left-aligned content. */
 [data-testid="stMainBlockContainer"] {
-    max-width: 1200px;
+    max-width: 1000px;
     margin: 0 auto;
 }
 
@@ -46,30 +51,35 @@ st.markdown("""
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* Subtle elevation instead of a flat page -- cards sit visibly above the
-   off-white page background (see config.toml) via a soft shadow, not just
-   a flat border. */
+/* Elevation against the off-white page background (see config.toml) --
+   strong enough to actually read as "raised," not just a hairline. */
 [data-testid="stMetric"], [data-testid="stAlertContainer"],
 [data-testid="stExpander"], [data-testid="stBaseButton-secondary"],
 [data-testid="stTableStyledTable"] {
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05);
+    border: 1px solid #e4e7e7 !important;
 }
 [data-testid="stExpander"], [data-testid="stBaseButton-secondary"] {
     border-radius: 8px;
 }
 
 /* The chat input is the primary interaction surface for a conversational
-   agent -- give it real visual weight (size, shadow, a teal-tinted border)
-   instead of a thin default bar that reads as an afterthought. */
+   agent, and is deliberately the first thing rendered in the tab (see
+   tab_ask below) -- it needs real visual weight: taller, an accent-tinted
+   fill (not just a border) so it unmistakably reads as "the" input rather
+   than "an" input among several controls. */
 [data-testid="stChatInput"] {
-    box-shadow: 0 2px 10px rgba(61,107,111,0.12), 0 1px 3px rgba(0,0,0,0.06);
-    border: 1.5px solid #b9d2d3;
+    background-color: #eef4f4;
+    box-shadow: 0 2px 12px rgba(61,107,111,0.16), 0 1px 3px rgba(0,0,0,0.06);
+    border: 2px solid #3d6b6f;
     border-radius: 12px;
+    min-height: 60px;
 }
 [data-testid="stChatInputTextArea"] {
-    font-size: 1.05rem;
-    padding-top: 14px;
-    padding-bottom: 14px;
+    font-size: 1.15rem;
+    padding-top: 16px;
+    padding-bottom: 16px;
+    background-color: transparent;
 }
 
 /* Restrained, harmonized alert palette (this app pins base="light" in
@@ -184,7 +194,6 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
 # ---------------------------------------------------------------------------
 
 with tab_ask:
-    st.write("**Try one of these, or type your own question below:**")
     suggestions = [
         "How much is pending for TechNova Software Solutions on invoice INV-9?",
         "Is TechNova invoice 17 correctly taxed?",
@@ -196,6 +205,15 @@ with tab_ask:
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = None
 
+    # Input first -- this is the primary action for a conversational tool,
+    # so it should be the first thing the eye lands on. Suggestions are a
+    # secondary "or try one of these" affordance below it, not a sibling
+    # beside it. (Verified this chat_input renders in normal document flow
+    # here, not pinned to the viewport bottom, so this ordering actually
+    # takes effect -- that's not true of every Streamlit layout context.)
+    typed = st.chat_input("Ask about a vendor balance or tax treatment...")
+
+    st.write("**Or try one of these:**")
     cols = st.columns(len(suggestions))
     for i, s in enumerate(suggestions):
         if cols[i].button(s, key=f"sugg_{i}", use_container_width=True):
@@ -207,7 +225,6 @@ with tab_ask:
             if msg.get("evidence"):
                 render_evidence(msg["evidence"], msg.get("tax_evidence"))
 
-    typed = st.chat_input("Ask about a vendor balance or tax treatment...")
     question = typed or st.session_state.pending_question
     st.session_state.pending_question = None
 

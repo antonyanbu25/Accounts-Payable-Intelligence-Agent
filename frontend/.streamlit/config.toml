@@ -8,7 +8,9 @@ primaryColor = "#3d6b6f"
 # Slightly off-white, not pure #ffffff -- gives card-like elements (metrics,
 # alerts, the chat input) something to visibly sit above via box-shadow in
 # the CSS block in app.py. Pure white-on-white has no room for elevation.
-backgroundColor = "#f6f7f7"
-secondaryBackgroundColor = "#eef1f1"
+# Hex equivalent of oklch(98% 0.003 260) -- config.toml only accepts hex/rgb,
+# not CSS color functions, so this is that value converted, not guessed.
+backgroundColor = "#f7f7f9"
+secondaryBackgroundColor = "#eef0f1"
 textColor = "#1a1f1f"
 font = "sans serif"
