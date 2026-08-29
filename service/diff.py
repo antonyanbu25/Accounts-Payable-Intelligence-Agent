@@ -42,6 +42,12 @@ class DiffResult:
     # just a missing nicety. Always populated, regardless of overall_match.
     eligible: bool = True
     eligibility_reasons: list = field(default_factory=list)
+    # Same class of gap, found by a second independent recruiter-style
+    # evaluation: an advance is never netted into overall_match either, and
+    # was previously dropped entirely at this layer -- a numerically
+    # "correct" advice for an invoice with an unapplied advance on file must
+    # never read as unconditionally safe to pay in full.
+    unapplied_advance_advisory: Optional[float] = None
 
 
 def _compare(field_name: str, claimed, correct, reason_if_mismatch: str) -> FieldDiff:
@@ -65,6 +71,7 @@ def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: st
                              "The advice's tax-dependent fields cannot be checked until this is resolved."),
             fields=[_compare("base_amount", submitted.get("base_amount"), true_result.pre_tax_ledger_position or true_result.base_amount, "")],
             eligible=is_eligible, eligibility_reasons=eligibility_reasons,
+            unapplied_advance_advisory=true_result.unapplied_advance_advisory,
         )
 
     gst = true_result.gst or {}
@@ -97,4 +104,5 @@ def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: st
 
     overall = all(f.match for f in fields)
     return DiffResult(overall_match=overall, fields=fields, eligible=is_eligible,
-                       eligibility_reasons=eligibility_reasons)
+                       eligibility_reasons=eligibility_reasons,
+                       unapplied_advance_advisory=true_result.unapplied_advance_advisory)

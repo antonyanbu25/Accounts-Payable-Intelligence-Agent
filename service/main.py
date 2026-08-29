@@ -138,6 +138,7 @@ def do_diff(req: DiffRequest):
         fields=[FieldDiffModel(field=f.field, claimed=f.claimed, correct=f.correct, match=f.match, reason=f.reason)
                 for f in result.fields],
         eligible=result.eligible, eligibility_reasons=result.eligibility_reasons,
+        unapplied_advance_advisory=result.unapplied_advance_advisory,
     )
 
 

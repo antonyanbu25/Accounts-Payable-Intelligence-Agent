@@ -398,7 +398,7 @@ nodes = [
     respond_node("Respond OK Vendor", "respond_ok_vendor", 2080, 0,
         "={{ JSON.stringify({ narrative: $('Narrate Vendor Details').first().json.content[0].text, evidence: $('Retrieve Vendor Details').first().json, guard: 'passed', note: 'general vendor information, not a balance/tax calculation' }) }}"),
     respond_node("Respond Fallback Vendor", "respond_fallback_vendor", 2080, 160,
-        "={{ (() => { const v = $('Retrieve Vendor Details').first().json; return JSON.stringify({ narrative: v.legal_name + ' -- status: ' + v.vendor_status + ', ' + (v.invoices ? v.invoices.length : 0) + ' invoice(s) on file. [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the retrieved data directly.]', evidence: v, guard: 'failed_fallback_used' }); })() }}"),
+        "={{ (() => { const v = $('Retrieve Vendor Details').first().json; return JSON.stringify({ narrative: v.legal_name + ' -- status: ' + v.vendor_status + ', ' + (v.invoices ? v.invoices.length : 0) + ' invoice(s) on file. [Showing the verified data directly -- the written summary did not pass our accuracy check.]', evidence: v, guard: 'failed_fallback_used' }); })() }}"),
 
     # ---- Branch A2: vendor was resolved AND it's a balance/tax question -- full transactional path ----
     postgres_node("Retrieve Facts", RETRIEVE_FACTS_SQL_EXPR[1:], "retrieve_facts", 1040, 260),
@@ -412,7 +412,7 @@ nodes = [
     respond_node("Respond OK", "respond_ok", 2600, 160,
         "={{ JSON.stringify({ narrative: $('Narrate').first().json.content[0].text, evidence: $('Compute').first().json, tax_evidence: $('Tax Lookup').first().json, guard: 'passed' }) }}"),
     respond_node("Respond Fallback (templated)", "respond_fallback", 2600, 360,
-        "={{ (() => { const c = $('Compute').first().json; return JSON.stringify({ narrative: 'Net disbursement due: ' + c.net_disbursement_due + ' (eligibility: ' + c.eligibility + '). [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed result directly.]', evidence: c, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"),
+        "={{ (() => { const c = $('Compute').first().json; return JSON.stringify({ narrative: 'Net disbursement due: ' + c.net_disbursement_due + ' (eligibility: ' + c.eligibility + '). [Showing the verified figures directly -- the written summary did not pass our accuracy check.]', evidence: c, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"),
 
     # ---- Branch B: no vendor resolved -> category-only or decline ----
     if_node("Category Mentioned?", "category_if", 1040, 560,
@@ -428,7 +428,7 @@ nodes = [
     respond_node("Respond OK Hypothetical", "respond_ok_h", 2340, 460,
         "={{ JSON.stringify({ narrative: $('Narrate Hypothetical').first().json.content[0].text, evidence: $('Category Tax Lookup').first().json, guard: 'passed', note: 'category-level answer, not tied to a specific vendor or transaction' }) }}"),
     respond_node("Respond Fallback H", "respond_fallback_h", 2340, 620,
-        "={{ (() => { const t = $('Category Tax Lookup').first().json; return JSON.stringify({ narrative: 'Applicable GST rate: ' + (t.gst ? t.gst.rate_pct : 'unknown') + '%. [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed result directly.]', evidence: t, guard: 'failed_fallback_used' }); })() }}"),
+        "={{ (() => { const t = $('Category Tax Lookup').first().json; return JSON.stringify({ narrative: 'Applicable GST rate: ' + (t.gst ? t.gst.rate_pct : 'unknown') + '%. [Showing the verified figures directly -- the written summary did not pass our accuracy check.]', evidence: t, guard: 'failed_fallback_used' }); })() }}"),
     respond_node("Respond Not Found", "respond_not_found", 1300, 700,
         "={{ JSON.stringify({ error: 'not_found', message: 'No vendor matching \\'' + $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.vendor_name_mentioned + '\\' was found, and no purchase category was identifiable either -- cannot answer without guessing.' }) }}"),
 ]

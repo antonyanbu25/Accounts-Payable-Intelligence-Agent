@@ -96,6 +96,12 @@ class DiffResponse(BaseModel):
     fields: list[FieldDiffModel]
     eligible: bool = True
     eligibility_reasons: list[str] = []
+    # An advance never gets netted into overall_match/eligible -- it's a
+    # separate advisory a human must act on regardless of whether the
+    # advice's numbers are correct. UC1 (ComputeResponse) already carries
+    # this; UC2 was silently dropping it at this response boundary before
+    # it ever reached the diff or the narration.
+    unapplied_advance_advisory: Optional[float] = None
 
 
 class NarrationCheckRequest(BaseModel):

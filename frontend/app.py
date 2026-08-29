@@ -757,6 +757,16 @@ with tab_validate:
                     st.warning("🚫 **NOT CLEAR TO PAY** — regardless of whether the numbers above match:\n\n"
                               + "\n".join(f"- {r}" for r in diff.get("eligibility_reasons", [])))
 
+                # Same advisory UC1 already shows for this invoice -- an
+                # advance never gets netted into overall_match/eligible, so
+                # a numerically "correct" advice must never read as
+                # unconditionally clear to release in full when one exists.
+                # Never present for category_only (no real advance data
+                # exists for an invoice that isn't recorded yet).
+                if not is_category_only and diff.get("unapplied_advance_advisory"):
+                    st.info(f"⚠️ Advisory: an unapplied advance of ₹{diff['unapplied_advance_advisory']:,.2f} "
+                            f"exists against this vendor/PO and has NOT been netted here — a possible overpayment risk if missed.")
+
                 fields = diff.get("fields", [])
                 if is_category_only:
                     # Collapse cgst+sgst into one "GST amount" row -- the
