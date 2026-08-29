@@ -630,7 +630,7 @@ def _render_json_block(data) -> None:
     st.markdown(f'<div class="example-json mono">{render(data, 0)}</div>', unsafe_allow_html=True)
 
 
-def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
+def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None, compact: bool = False):
     if "invoices" in evidence:
         # Vendor-lookup response (general vendor info, e.g. "which state is
         # this vendor in", "what other invoices do they have") -- NOT a
@@ -677,7 +677,7 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
             f'<div class="refusal-block">'
             f'<div class="heading">⏸ Held for review — {html.escape(str(evidence.get("eligibility", "")))}</div>'
             f'Pre-tax ledger position (base − advances − credits − payments): '
-            f'₹{evidence.get("pre_tax_ledger_position"):,.2f}.{conflict_html}'
+            f'₹{evidence.get("pre_tax_ledger_position"):,.0f}.{conflict_html}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -688,30 +688,50 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
         # explicit element (not a CSS rule targeting the column row itself)
         # since Streamlit gives st.columns() no stable hook to distinguish
         # THIS row from every other st.columns() call elsewhere in the app.
+        # `compact` (2x2 instead of 1x4) is the one exception: found live
+        # that render_comparison_evidence() already halves the page width
+        # per invoice before this function ever runs, so cramming all 4
+        # metrics into THAT halved width truncated "Net disbursement due"'s
+        # value to "₹102..." -- unreadable, not just visually busier. 2x2
+        # inside a half-width column gives each metric roughly the same
+        # width st.metric() already renders correctly at in the single-
+        # invoice (non-compact, full-width, 1x4) case.
         st.markdown('<div style="border-top: 1px solid var(--panel-border); margin: 18px 0 4px;"></div>',
                     unsafe_allow_html=True)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Base amount", f"₹{evidence.get('base_amount', 0):,.2f}")
-        c2.metric("GST", f"₹{gst.get('gst_amount', 0):,.2f}" if gst else "—")
-        c3.metric("TDS withheld", f"₹{evidence.get('tds_amount', 0):,.2f}" if evidence.get("tds_amount") is not None else "—")
-        c4.metric("Net disbursement due", f"₹{evidence.get('net_disbursement_due', 0):,.2f}")
+        base_amount_val = f"₹{evidence.get('base_amount', 0):,.0f}"
+        gst_val = f"₹{gst.get('gst_amount', 0):,.0f}" if gst else "—"
+        tds_val = f"₹{evidence.get('tds_amount', 0):,.0f}" if evidence.get("tds_amount") is not None else "—"
+        net_val = f"₹{evidence.get('net_disbursement_due', 0):,.0f}"
+        if compact:
+            r1c1, r1c2 = st.columns(2)
+            r1c1.metric("Base amount", base_amount_val)
+            r1c2.metric("GST", gst_val)
+            r2c1, r2c2 = st.columns(2)
+            r2c1.metric("TDS withheld", tds_val)
+            r2c2.metric("Net disbursement due", net_val)
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Base amount", base_amount_val)
+            c2.metric("GST", gst_val)
+            c3.metric("TDS withheld", tds_val)
+            c4.metric("Net disbursement due", net_val)
 
         if gst.get("split_type") == "IGST":
-            st.caption(f"GST split: IGST ₹{gst.get('igst', 0):,.2f} (inter-state — vendor and office are in different states)")
+            st.caption(f"GST split: IGST ₹{gst.get('igst', 0):,.0f} (inter-state — vendor and office are in different states)")
         elif gst.get("split_type") == "UNKNOWN":
             st.caption("GST split: could not be determined — this invoice has no linked purchase order/office "
                        "on file to compare vendor and office state against. Total GST amount above is still correct.")
         elif gst:
-            st.caption(f"GST split: CGST ₹{gst.get('cgst', 0):,.2f} + SGST ₹{gst.get('sgst', 0):,.2f} (intra-state)")
+            st.caption(f"GST split: CGST ₹{gst.get('cgst', 0):,.0f} + SGST ₹{gst.get('sgst', 0):,.0f} (intra-state)")
 
         st.write(f"**Payment eligibility:** {evidence.get('eligibility')}")
         if evidence.get("unapplied_advance_advisory"):
-            st.info(f"⚠️ Advisory: an unapplied advance of ₹{evidence['unapplied_advance_advisory']:,.2f} "
+            st.info(f"⚠️ Advisory: an unapplied advance of ₹{evidence['unapplied_advance_advisory']:,.0f} "
                      f"exists against this vendor/PO and has NOT been netted here — a possible overpayment risk if missed.")
         twm = evidence.get("three_way_match")
         if twm and not twm.get("matched"):
-            st.error(f"⚠️ 3-way match FAILED: PO ₹{twm['po_amount']:,.2f} / receipt ₹{twm['receipt_amount']:,.2f} "
-                      f"/ invoice ₹{twm['invoice_base_amount']:,.2f} — difference exceeds tolerance (₹{twm['tolerance']:,.2f}).")
+            st.error(f"⚠️ 3-way match FAILED: PO ₹{twm['po_amount']:,.0f} / receipt ₹{twm['receipt_amount']:,.0f} "
+                      f"/ invoice ₹{twm['invoice_base_amount']:,.0f} — difference exceeds tolerance (₹{twm['tolerance']:,.0f}).")
 
     if tax_evidence:
         with st.expander("Tax document sources (exact clause quoted)"):
@@ -738,7 +758,7 @@ def render_comparison_evidence(invoices: list):
     for col, inv in zip(cols, invoices):
         with col:
             st.markdown(f"**Invoice {inv.get('invoice_id', '—')}** ({inv.get('invoice_date', '—')})")
-            render_evidence(inv.get("evidence") or {}, inv.get("tax_evidence"))
+            render_evidence(inv.get("evidence") or {}, inv.get("tax_evidence"), compact=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1223,7 +1243,7 @@ def _validate_and_render(payload: dict, key_suffix: str) -> None:
         # Never present for category_only (no real advance data
         # exists for an invoice that isn't recorded yet).
         if not is_category_only and diff.get("unapplied_advance_advisory"):
-            st.info(f"⚠️ Advisory: an unapplied advance of ₹{diff['unapplied_advance_advisory']:,.2f} "
+            st.info(f"⚠️ Advisory: an unapplied advance of ₹{diff['unapplied_advance_advisory']:,.0f} "
                     f"exists against this vendor/PO and has NOT been netted here — a possible overpayment risk if missed.")
 
         # Non-PO invoice with no linked office -- the true CGST/SGST-vs-IGST
