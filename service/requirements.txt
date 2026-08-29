@@ -17,10 +17,20 @@
 # (added when orchestration moved in-process, replacing n8n) -- both are
 # lightweight and were not the cause of the OOM above, so adding them here
 # does not reintroduce that risk.
+#
+# anthropic is version-PINNED (unlike the other deps here) -- found live in
+# production: an unpinned `pip install anthropic` on Render's build image
+# (Python 3.14, newer than anything tested locally) resolved to a version
+# old enough that Messages.create() doesn't accept `temperature` at all,
+# raising a bare TypeError on every Parse Intent call ("got an unexpected
+# keyword argument 'temperature'") -- 500s on every single request. Pinned
+# to the exact version confirmed working locally (temperature IS a real
+# parameter on this version's Messages.create signature) so the install is
+# reproducible regardless of what a future unconstrained resolve might pick.
 fastapi
 uvicorn[standard]
 python-dotenv
 chromadb
 pydantic
 psycopg2-binary
-anthropic
+anthropic==0.104.0
