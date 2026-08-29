@@ -385,5 +385,159 @@
       "expected": {"error": "comparison_incomplete", "missing_contains": "9999"},
       "why": "9999 does not exist for this vendor -- must not silently compare invoice 13 against nothing, or crash; must explicitly say which invoice couldn't be found (reuses the existing {error, message} response shape already used by Respond Not Found / Respond Vendor Ambiguous)."
     }
+  ],
+  "additional_cases": [
+    {
+      "id": "T2-multi-invoice-vendor-total",
+      "question": "How much do we currently owe TechNova Software Solutions across all its invoices?",
+      "vendor": "TechNova Software Solutions",
+      "invoice_ids": [9, 17, 19],
+      "expected": {
+        "invoice_count": 3,
+        "invoice_ids": [9, 17, 19],
+        "total_net_disbursement_due": 328800.00
+      },
+      "why": "Tests aggregation across multiple invoices rather than answering from the first matching invoice. Traced from existing eval expected nets: 84000 (T1-partial-payment INV-9) + 112200 (T1-vendor-stated-superseded-rate INV-17 true_net_disbursement_due) + 132600 (T1-cgst-sgst-split-demo INV-19) = 328800. V1-vendor-details-basic already records that TechNova has exactly these three invoices."
+    },
+    {
+      "id": "T2-multi-invoice-breakdown",
+      "question": "Break down what we owe TechNova across its invoices. Which invoices make up the total?",
+      "vendor": "TechNova Software Solutions",
+      "expected": {
+        "invoice_count": 3,
+        "invoices": [
+          {"invoice_id": 9, "net_disbursement_due": 84000.00},
+          {"invoice_id": 17, "net_disbursement_due": 112200.00},
+          {"invoice_id": 19, "net_disbursement_due": 132600.00}
+        ],
+        "total_net_disbursement_due": 328800.00
+      },
+      "why": "Tests whether the aggregate is auditable: the agent must identify the contributing invoices and reconcile their individual balances to the vendor total. Same traced figures as T2-multi-invoice-vendor-total. Catches systems that emit a summed number with no invoice list, or that mix vendor-stated GST on INV-17 into the payable."
+    },
+    {
+      "id": "T2-why-calculation",
+      "question": "Why is the amount payable for TechNova's invoice INV-9 ₹84,000?",
+      "invoice_id": 9,
+      "expected": {
+        "base_amount": 200000.00,
+        "gst_amount": 24000.00,
+        "gross_liability": 224000.00,
+        "tds_amount": 20000.00,
+        "payments_made": 120000.00,
+        "net_disbursement_due": 84000.00,
+        "explanation_must_reconcile": true
+      },
+      "why": "Tests explanatory reasoning, not just the final number. Figures are copied from T1-partial-payment. The response should reconcile 224000 - 20000 - 120000 = 84000 and identify the underlying data or rule for each component. Catches agents that restate 84000 without a waterfall."
+    },
+    {
+      "id": "T2-source-traceability",
+      "question": "For TechNova INV-9, tell me where the amount, tax rate, TDS and prior payment figures came from.",
+      "invoice_id": 9,
+      "expected": {
+        "base_amount": 200000.00,
+        "gst_rate_pct": 12.0,
+        "tds_rate_pct": 10.0,
+        "payments_made": 120000.00,
+        "traceability_required": true
+      },
+      "why": "Tests whether the agent can distinguish structured financial or procurement facts from regulatory guidance and explain the provenance of the figures used in its calculation. Numeric fields are from T1-partial-payment. Acceptable grounding names Source B (invoice/payment amounts) versus Source C (GST/TDS rates). Must not invent a bank account, circular number, or rate that is not in the mock sources."
+    },
+    {
+      "id": "A5-ambiguous-vendor-tax",
+      "question": "What's the tax rate for Skyline Software Labs?",
+      "vendor": "Skyline Software Labs",
+      "expected": {
+        "must_not_assume_single_invoice": true,
+        "known_gst_distinctions_from_eval_set": [
+          {"invoice_id": 13, "gst_rate_pct": 18.0, "invoice_date": "2025-09-01"},
+          {"invoice_id": 14, "gst_rate_pct": 12.0, "invoice_date": "2025-10-01"}
+        ],
+        "acceptable_behavior": [
+          "ask which invoice or purchase the user means",
+          "or explain that Skyline has invoices on both sides of 22-Sep-2025 and that GST differs (18% vs 12%)"
+        ]
+      },
+      "why": "Vendor name alone is insufficient. T1-effective-date-pre/post and C1 already establish that Skyline INV-13 (1 Sep 2025) is 18% GST and INV-14 (1 Oct 2025) is 12%. A draft of this case used TechNova; that vendor's three invoices all have a true GST rate of 12% in this eval set, so a single-rate answer would not be a reliable fail. Skyline is the invoice whose GST actually changes with date. INV-16 is a further Skyline conflict (category unresolved) but this case only requires not collapsing to one GST rate."
+    },
+    {
+      "id": "A6-unsupported-field",
+      "question": "What's TechNova's bank account number?",
+      "expected": {
+        "must_not_invent": true,
+        "response_type": "graceful unsupported-information response"
+      },
+      "why": "Tests grounding beyond nonexistent vendors: a real-world AP field may sound plausible, but neither eval_set.json nor the assignment sources establish a bank-account value. Distinct from A1 (unknown vendor) — the vendor exists (V1) and the field does not."
+    },
+    {
+      "id": "A7-natural-language-payment-question",
+      "question": "I'm about to pay TechNova for INV-9. What should I actually transfer, after everything that's already been paid and withheld?",
+      "invoice_id": 9,
+      "expected": {
+        "net_disbursement_due": 84000.00,
+        "must_account_for": [
+          "payments_made",
+          "tds_amount",
+          "gst_amount"
+        ]
+      },
+      "why": "Tests the same core computation as T1-partial-payment through realistic conversational wording rather than assignment-style terminology. Catches intent parsers that only fire on 'pending' / 'net payable' phrasing."
+    },
+    {
+      "id": "A8-natural-language-tax-followup",
+      "turns": [
+        "How much is pending for TechNova Software Solutions on invoice INV-9?",
+        "And is the tax right?"
+      ],
+      "expected_final": {
+        "invoice_id": 9,
+        "gst_rate_pct": 12.0,
+        "tds_rate_pct": 10.0,
+        "net_disbursement_due": 84000.00
+      },
+      "why": "Tests whether a natural-language follow-up resolves the prior invoice and performs the tax validation without requiring the user to repeat the vendor or invoice number. Same INV-9 figures as T1-partial-payment. Complements M1, which uses more assignment-like wording ('Is that invoice correctly taxed?')."
+    },
+    {
+      "id": "T2-unapplied-advance-not-netted",
+      "question": "How much is payable on Bright Office Furnishings invoice INV-1, and is there any unused advance sitting against this vendor?",
+      "invoice_id": 1,
+      "expected": {
+        "net_disbursement_due": 100300.00,
+        "unapplied_advance_advisory": 15000.00,
+        "must_not_subtract_unapplied_advance_from_invoice": true
+      },
+      "why": "The assignment compute contract (and db/seed.py Tier-2 comment) places a 15000 unapplied advance on vendor 2 (Bright Office Furnishings) with applied_against_invoice_id null — advisory only, never netted. INV-1 net payable is already established as 100300 in A3-false-positive-check expected_reconstruction. Catches agents that subtract unused advances into the invoice waterfall, producing 85300."
+    },
+    {
+      "id": "A9-ambiguous-vendor-name",
+      "question": "What's outstanding for Acme?",
+      "expected": {
+        "must_not_assume_single_vendor": true,
+        "candidate_vendors": [
+          "Acme Furnishings Pvt Ltd",
+          "Acme Traders Pvt Ltd"
+        ],
+        "response_type": "disambiguation question",
+        "must_not_state_a_single_balance": true
+      },
+      "why": "db/seed.py seeds a deliberate name-ambiguity pair (vendors 11 and 12). The assignment plan requires multiple close vendor matches to trigger a disambiguation question rather than silently picking one. This case does not assert invoice nets for INV-22 or INV-23 because those amounts are not in the existing eval answer key."
+    },
+    {
+      "id": "T2-blocked-vendor-eligibility",
+      "question": "How much is outstanding for Coastal Facility Services on invoice INV-24, and can we release payment?",
+      "invoice_id": 24,
+      "expected": {
+        "base_amount": 30000.00,
+        "gst_rate_pct": 18.0,
+        "gst_split": {"type": "CGST+SGST", "cgst": 2700.00, "sgst": 2700.00},
+        "tds_rate_pct": 10.0,
+        "tds_section": "194J",
+        "tds_amount": 3000.00,
+        "gross_liability": 35400.00,
+        "net_disbursement_due": 32400.00,
+        "payment_eligibility": "not eligible: vendor blocked",
+        "must_still_state_balance": true
+      },
+      "why": "Every existing T1 case expects payment_eligibility eligible. The assignment requires stating the balance while separately gating release for a blocked vendor. Invoice 24 is the seeded Coastal Facility Services / Services / 30000 / 2026-03-07 / Bangalore office chain in db/seed.py and db/scenario_index.txt. Tax math uses the same GST_RATES/TDS_RATES tables as the eval answer key: Services post-22-Sep-2025 GST 18% (5400), TDS 10% u/s 194J on base excluding GST (3000), vendor Karnataka matching office Karnataka so CGST+SGST, no payments/advances/credits. Catches agents that hide the payable because the vendor is blocked, or that call the invoice eligible."
+    }
   ]
 }
