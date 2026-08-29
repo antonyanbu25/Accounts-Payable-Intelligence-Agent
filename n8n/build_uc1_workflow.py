@@ -383,9 +383,23 @@ nodes = [
         "names.join(', ') + '. Please specify which one you mean.', candidates: names }); })() }}"),
     if_node("Vendor Found?", "vendor_found_if", 780, 400,
             "={{ $json.vendor_id }}", "", "string", "notEmpty"),
+    # A vendor_lookup question that ALSO names a specific invoice is
+    # eligibility-flavored in practice ("is this vendor eligible for
+    # payment on invoice 24?") -- found by recruiter-mindset testing that
+    # such questions surfaced vendor status in prose but never a computed
+    # eligibility verdict, because Retrieve Vendor Details has no PO/
+    # receipt/status join at all and can't compute one even in principle.
+    # Route those into the SAME pipeline balance_lookup/tax_lookup/
+    # combined_lookup already use instead -- no new SQL, no new endpoint;
+    # RETRIEVE_FACTS_SQL_TEMPLATE already has everything /compute needs,
+    # and render_evidence() already renders "Payment eligibility: ..." for
+    # any Compute-shaped response regardless of what the narration says.
+    # Only a genuinely vendor-less vendor_lookup question (no invoice
+    # named) still takes the Retrieve Vendor Details branch.
     if_node("Is Vendor Lookup?", "vendor_lookup_if", 900, 260,
-            "={{ $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.intent }}",
-            "vendor_lookup", "string", "equals"),
+            "={{ (() => { const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input; "
+            "return parsed.intent === 'vendor_lookup' && (parsed.invoice_id_mentioned === null || parsed.invoice_id_mentioned === undefined); })() }}",
+            True, "boolean", "true"),
 
     # ---- Branch A1: vendor was resolved AND it's a general vendor-info
     # question -- pure retrieval + narration, no tax/compute involved at all ----
