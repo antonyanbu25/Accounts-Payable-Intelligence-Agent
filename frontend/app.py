@@ -80,6 +80,10 @@ st.markdown("""
     padding-top: 16px;
     padding-bottom: 16px;
     background-color: transparent;
+    /* Explicit cap, not just min-height on the wrapper -- older Streamlit
+       versions (confirmed on 1.50.0, not present on the deployed 1.62.0)
+       auto-expand this textarea to ~260px with no cap otherwise. */
+    max-height: 60px !important;
 }
 
 /* Restrained, harmonized alert palette (this app pins base="light" in
