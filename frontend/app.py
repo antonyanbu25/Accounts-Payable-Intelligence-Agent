@@ -569,14 +569,29 @@ html, body, [data-testid="stAppViewContainer"] {
    LLM's narration includes a markdown heading, a <ul>, etc. -- the `*`
    descendant selector colors whatever it actually turns out to be, rather
    than assuming it's always one <p>. */
-.st-key-verdict_ok, .st-key-verdict_ok * { color: var(--success-text) !important; }
-.st-key-verdict_ok { margin-top: 18px; font-size: 14px; }
+/* [class*=...] substring selectors, not exact-match .st-key-verdict_ok --
+   found live (a screen-by-screen pass after the multi-row-batch feature
+   shipped): st.container(key=f"verdict_ok_{key_suffix}") produces an
+   actual class of "st-key-verdict_ok_0" (the row index appended), which
+   an EXACT selector for ".st-key-verdict_ok" never matches at all -- this
+   coloring has been silently doing nothing since the per-row key suffix
+   was added, confirmed via computed style (rgb(232,232,234), the default
+   text color, not var(--success-text)) rather than assumed. Renamed
+   ok_heading/ok_text (was bare "verdict_ok") to exactly parity the
+   existing bad_heading/bad_text naming -- also deliberately avoids a
+   substring collision ("verdict_ok" would itself be a substring of
+   "verdict_ok_text", matching both rules at once). */
+[class*="verdict_ok_heading"], [class*="verdict_ok_heading"] * { color: var(--success-text) !important; }
+[class*="verdict_ok_heading"] { margin-top: 18px; font-size: 14px; }
 
-.st-key-verdict_bad_heading, .st-key-verdict_bad_heading * { color: var(--error-text) !important; }
-.st-key-verdict_bad_heading { margin-top: 18px; font-size: 14px; }
+[class*="verdict_ok_text"], [class*="verdict_ok_text"] * { color: var(--muted) !important; }
+[class*="verdict_ok_text"] { font-size: 13px; margin-top: 4px; }
 
-.st-key-verdict_bad_text, .st-key-verdict_bad_text * { color: var(--muted) !important; }
-.st-key-verdict_bad_text { font-size: 13px; margin-top: 4px; }
+[class*="verdict_bad_heading"], [class*="verdict_bad_heading"] * { color: var(--error-text) !important; }
+[class*="verdict_bad_heading"] { margin-top: 18px; font-size: 14px; }
+
+[class*="verdict_bad_text"], [class*="verdict_bad_text"] * { color: var(--muted) !important; }
+[class*="verdict_bad_text"] { font-size: 13px; margin-top: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1234,8 +1249,19 @@ def _validate_and_render(payload: dict, key_suffix: str) -> None:
             # gives a real, plain (borderless) DOM element to color
             # via CSS instead, with the text going through
             # Streamlit's normal, full markdown path.
-            with st.container(key=f"verdict_ok_{key_suffix}"):
-                st.markdown("✓ " + result.get("verdict", "Advice matches the independently computed result."))
+            # Found live: "✓ " + verdict_text concatenated onto ONE line
+            # broke any markdown heading the LLM's own text happened to
+            # start with -- "✓ ## Validation Verdict" is no longer valid
+            # ATX heading syntax (the "#"s aren't the first characters on
+            # the line anymore), so it rendered as a literal "## " prefix
+            # instead of an actual heading. Split into two containers,
+            # mirroring the "bad" case below exactly: a small fixed
+            # checkmark line, then the model's own text as its own
+            # independent markdown block.
+            with st.container(key=f"verdict_ok_heading_{key_suffix}"):
+                st.markdown("✓ Verified")
+            with st.container(key=f"verdict_ok_text_{key_suffix}"):
+                st.markdown(result.get("verdict", "Advice matches the independently computed result."))
         else:
             with st.container(key=f"verdict_bad_heading_{key_suffix}"):
                 st.markdown("✗ Divergence found")
