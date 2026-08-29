@@ -8,6 +8,21 @@ the plan's UC2 input design (form/paste/upload, never LLM-parsed). The
 retrieval -> tax-lookup -> compute chain runs identically to UC1 and is
 never given the submitted_advice -- that's what makes this a genuine blind
 reconstruction, not a review of the human's numbers.
+
+Two branches, chosen by whether the request includes an invoice_id:
+  - invoice_id present -> the full reconstruction above (existing record,
+    3-way match, vendor eligibility, real tax jurisdiction).
+  - invoice_id absent -> a deliberately WEAKER "category rate check" branch
+    for an invoice that isn't recorded in the system yet (a real accountant
+    workflow: sanity-check the tax math on a draft advice before the
+    invoice is even entered). Reuses the same tested /compute + /diff
+    engine (base_amount is fed in as the accountant's own claim -- there is
+    no PO/receipt to verify it against, which is exactly the pre-existing,
+    already-tested "non-PO invoice" case in compute.py), but the response is
+    explicitly labeled mode: "category_only" and never lets eligibility or
+    3-way-match read as verified -- those fields simply aren't surfaced,
+    with a note explaining why, rather than silently defaulting to
+    misleading values.
 """
 import os
 
@@ -123,6 +138,78 @@ CHECK_NARRATION_BODY_EXPR = """={{ (() => {
   });
 })() }}"""
 
+# --------------------------------------------------------------------------
+# "New invoice" branch: no invoice_id in the request -- the accountant is
+# sanity-checking a draft advice for something not yet entered anywhere.
+# Same HSN/SAC-by-category map as UC1's category-only path (build_uc1_workflow.py
+# CATEGORY_TAX_LOOKUP_BODY_EXPR) -- duplicated rather than shared, matching
+# this codebase's existing convention of each workflow-builder script being
+# self-contained. vendor_state/office_state are the same neutral placeholder
+# UC1 uses for the same reason: the rate itself (compute.py / tax_lookup.py)
+# never depends on state, only the CGST/SGST-vs-IGST split does, and that
+# split isn't meaningful (or checked) here without a real vendor/office.
+# --------------------------------------------------------------------------
+NEW_INVOICE_TAX_LOOKUP_BODY_EXPR = """={{ (() => {
+  const advice = $('UC2 Webhook').first().json.body.submitted_advice || {};
+  const invoiceDate = $('UC2 Webhook').first().json.body.invoice_date || new Date().toISOString().slice(0,10);
+  const HSN_SAC_BY_CATEGORY = {Furniture: '9403', Software: '998313', Services: '998311', Food: '996331', Appliances: '8516'};
+  return JSON.stringify({
+    category: advice.category,
+    hsn_or_sac: HSN_SAC_BY_CATEGORY[advice.category] || '',
+    invoice_date: invoiceDate,
+    vendor_state: 'Karnataka',
+    office_state: 'Karnataka',
+    needs_tds: true
+  });
+})() }}"""
+
+# Reuses /compute exactly as-is -- no po_amount/receipt_amount means
+# check_three_way_match(...) returns None (compute.py's own documented
+# "non-PO invoice, nothing to match" case, not a new code path), and
+# base_amount is the accountant's own claim since there is no PO/receipt to
+# independently source it from. vendor_status/po_status/invoice_status are
+# left at /compute's defaults (active/None/open) purely so the arithmetic
+# runs -- the response layer below never surfaces the resulting eligibility
+# as if it were a verified fact.
+NEW_INVOICE_COMPUTE_BODY_EXPR = """={{ (() => {
+  const advice = $('UC2 Webhook').first().json.body.submitted_advice || {};
+  const tax = $json;
+  return JSON.stringify({
+    base_amount: Number(advice.base_amount),
+    gst_rate_pct: tax.gst.rate_pct,
+    tds_rate_pct: tax.tds ? tax.tds.rate_pct : 0.0,
+    tds_section: tax.tds ? tax.tds.tds_section : null,
+    split_type: tax.split_type
+  });
+})() }}"""
+
+NEW_INVOICE_DIFF_BODY_EXPR = """={{ (() => {
+  const advice = $('UC2 Webhook').first().json.body.submitted_advice || {};
+  return JSON.stringify({
+    compute_result: $json,
+    submitted_advice: advice,
+    category_reason: ''
+  });
+})() }}"""
+
+NEW_INVOICE_NARRATE_BODY_EXPR = """={{ JSON.stringify({
+  model: "claude-sonnet-4-5-20250929",
+  max_tokens: 400,
+  messages: [{role:"user", content:
+    "You are checking a DRAFT payment advice for an invoice that is NOT YET recorded in the system -- there is no purchase order, receipt, or invoice record to reconstruct against, so this is a REDUCED check: only whether the submitted GST rate, TDS amount, and net-payable math use the CURRENT correct tax rate for the stated category and date. The submitted base amount is taken as given, not independently verified. Do NOT say the payment is eligible, matched, or clear to release, and do NOT mention a 3-way match -- neither can be assessed without a real record. Write a short, plain-language verdict (3-5 sentences), using ONLY the numbers in this JSON, never inventing one, and explicitly note this is a rate-only check on an unrecorded invoice. Diff result: " + JSON.stringify($json)
+  }]
+}) }}"""
+
+NEW_INVOICE_CHECK_NARRATION_BODY_EXPR = """={{ (() => {
+  const d = $('New Invoice Diff').first().json;
+  const nums = [];
+  for (const f of d.fields) { if (f.claimed !== null && f.claimed !== undefined) nums.push(f.claimed); if (f.correct !== null && f.correct !== undefined) nums.push(f.correct); }
+  return JSON.stringify({
+    narrative_text: $json.content[0].text,
+    structured_values: nums
+  });
+})() }}"""
+
 
 def http_node(name, url, body_expr, node_id, x, y, extra_headers=None):
     return {
@@ -163,7 +250,15 @@ nodes = [
         "parameters": {"httpMethod": "POST", "path": "uc2-validate", "responseMode": "responseNode", "options": {}},
         "webhookId": "uc2-validate",
     },
-    postgres_node("Retrieve Facts", RETRIEVE_FACTS_SQL, "retrieve_facts", 260, 300, always_output=True),
+    {
+        "id": "invoice_id_provided_if", "name": "Invoice ID Provided?", "type": "n8n-nodes-base.if", "typeVersion": 2,
+        "position": [140, 300],
+        "parameters": {"conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                        "conditions": [{"leftValue": "={{ $json.body.invoice_id }}", "rightValue": "",
+                                        "operator": {"type": "string", "operation": "notEmpty"}}],
+                        "combinator": "and"}},
+    },
+    postgres_node("Retrieve Facts", RETRIEVE_FACTS_SQL, "retrieve_facts", 260, 200, always_output=True),
     {
         "id": "found_if", "name": "Invoice Found?", "type": "n8n-nodes-base.if", "typeVersion": 2,
         "position": [520, 300],
@@ -205,10 +300,44 @@ nodes = [
         "parameters": {"respondWith": "json", "responseBody":
             "={{ (() => { const d = $('Diff').first().json; const mism = d.fields.filter(f => !f.match).map(f => f.field + ': claimed ' + f.claimed + ', correct ' + f.correct); const numVerdict = d.overall_match ? 'Advice matches the independently computed result.' : ('Advice diverges on: ' + mism.join('; ') + '.'); const eligVerdict = d.eligible ? '' : (' ⚠ NOT CLEAR TO PAY regardless of the numbers above: ' + d.eligibility_reasons.join('; ') + '.'); return JSON.stringify({ verdict: numVerdict + eligVerdict + ' [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed diff directly.]', diff: d, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"},
     },
+
+    # ---- New-invoice branch: no invoice_id -- category rate check only ----
+    http_node("New Invoice Tax Lookup", f"{FASTAPI_BASE}/tax-lookup", NEW_INVOICE_TAX_LOOKUP_BODY_EXPR,
+              "new_invoice_tax_lookup", 260, 460),
+    http_node("New Invoice Compute", f"{FASTAPI_BASE}/compute", NEW_INVOICE_COMPUTE_BODY_EXPR,
+              "new_invoice_compute", 520, 460),
+    http_node("New Invoice Diff", f"{FASTAPI_BASE}/diff", NEW_INVOICE_DIFF_BODY_EXPR,
+              "new_invoice_diff", 780, 460),
+    http_node("New Invoice Narrate Diff", "https://api.anthropic.com/v1/messages", NEW_INVOICE_NARRATE_BODY_EXPR,
+              "new_invoice_narrate_diff", 1040, 460, anthropic_headers),
+    http_node("New Invoice Check Narration", f"{FASTAPI_BASE}/check-narration", NEW_INVOICE_CHECK_NARRATION_BODY_EXPR,
+              "new_invoice_check_narration", 1300, 460),
+    {
+        "id": "new_invoice_guard_if", "name": "New Invoice Guard Passed?", "type": "n8n-nodes-base.if", "typeVersion": 2,
+        "position": [1560, 460],
+        "parameters": {"conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                        "conditions": [{"leftValue": "={{ $json.passed }}", "rightValue": True,
+                                        "operator": {"type": "boolean", "operation": "true"}}],
+                        "combinator": "and"}},
+    },
+    {
+        "id": "respond_ok_new_invoice", "name": "Respond OK New Invoice", "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1, "position": [1820, 400],
+        "parameters": {"respondWith": "json", "responseBody":
+            "={{ JSON.stringify({ mode: 'category_only', verdict: $('New Invoice Narrate Diff').first().json.content[0].text, diff: $('New Invoice Diff').first().json, tax_evidence: $('New Invoice Tax Lookup').first().json, guard: 'passed', note: 'This invoice is not yet recorded in the system -- only the GST rate, TDS, and net-payable math were checked against current category tax rules. Base amount, 3-way match, and vendor eligibility could not be verified.' }) }}"},
+    },
+    {
+        "id": "respond_fallback_new_invoice", "name": "Respond Fallback New Invoice", "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1, "position": [1820, 560],
+        "parameters": {"respondWith": "json", "responseBody":
+            "={{ (() => { const d = $('New Invoice Diff').first().json; const mism = d.fields.filter(f => !f.match && f.field !== 'base_amount').map(f => f.field + ': claimed ' + f.claimed + ', correct ' + f.correct); const numVerdict = mism.length === 0 ? 'Submitted GST/TDS math matches the current category tax rate.' : ('Divergence found: ' + mism.join('; ') + '.'); return JSON.stringify({ mode: 'category_only', verdict: numVerdict + ' [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the computed diff directly.]', diff: d, tax_evidence: $('New Invoice Tax Lookup').first().json, guard: 'failed_fallback_used', note: 'This invoice is not yet recorded in the system -- only the GST rate, TDS, and net-payable math were checked against current category tax rules. Base amount, 3-way match, and vendor eligibility could not be verified.' }); })() }}"},
+    },
 ]
 
 connections = {
-    "UC2 Webhook": {"main": [[{"node": "Retrieve Facts", "type": "main", "index": 0}]]},
+    "UC2 Webhook": {"main": [[{"node": "Invoice ID Provided?", "type": "main", "index": 0}]]},
+    "Invoice ID Provided?": {"main": [[{"node": "Retrieve Facts", "type": "main", "index": 0}],
+                                       [{"node": "New Invoice Tax Lookup", "type": "main", "index": 0}]]},
     "Retrieve Facts": {"main": [[{"node": "Invoice Found?", "type": "main", "index": 0}]]},
     "Invoice Found?": {"main": [[{"node": "Tax Lookup", "type": "main", "index": 0}],
                                  [{"node": "Respond Not Found", "type": "main", "index": 0}]]},
@@ -219,6 +348,14 @@ connections = {
     "Check Narration": {"main": [[{"node": "Guard Passed?", "type": "main", "index": 0}]]},
     "Guard Passed?": {"main": [[{"node": "Respond OK", "type": "main", "index": 0}],
                                 [{"node": "Respond Fallback (templated)", "type": "main", "index": 0}]]},
+
+    "New Invoice Tax Lookup": {"main": [[{"node": "New Invoice Compute", "type": "main", "index": 0}]]},
+    "New Invoice Compute": {"main": [[{"node": "New Invoice Diff", "type": "main", "index": 0}]]},
+    "New Invoice Diff": {"main": [[{"node": "New Invoice Narrate Diff", "type": "main", "index": 0}]]},
+    "New Invoice Narrate Diff": {"main": [[{"node": "New Invoice Check Narration", "type": "main", "index": 0}]]},
+    "New Invoice Check Narration": {"main": [[{"node": "New Invoice Guard Passed?", "type": "main", "index": 0}]]},
+    "New Invoice Guard Passed?": {"main": [[{"node": "Respond OK New Invoice", "type": "main", "index": 0}],
+                                            [{"node": "Respond Fallback New Invoice", "type": "main", "index": 0}]]},
 }
 
 workflow = {"name": "UC2 - Validation", "nodes": nodes, "connections": connections,

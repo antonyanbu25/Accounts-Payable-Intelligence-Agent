@@ -14,3 +14,12 @@ backgroundColor = "#f7f7f9"
 secondaryBackgroundColor = "#eef0f1"
 textColor = "#1a1f1f"
 font = "sans serif"
+
+# Streamlit's own default chrome (a "Deploy" button, and a hamburger menu
+# exposing Rerun/Settings/Print/Record a screencast/Developer options ->
+# Clear cache) is visible on the live deployed app to any viewer, including
+# a recruiter -- nothing built for this project, just framework noise with
+# no place in a polished demo. "minimal" hides the Deploy button and trims
+# the menu to the smallest necessary set.
+[client]
+toolbarMode = "minimal"

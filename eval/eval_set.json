@@ -235,5 +235,120 @@
       ],
       "why": "Tests that the diff catches BOTH errors independently rather than stopping at the first one found."
     }
+  ],
+  "multi_turn_cases": [
+    {
+      "id": "M1-invoice-pronoun-continuity",
+      "turns": [
+        "How much is pending for TechNova Software Solutions on invoice INV-9?",
+        "Is that invoice correctly taxed?"
+      ],
+      "expected_final": {
+        "base_amount": 200000.00, "gst_amount": 24000.00, "tds_amount": 20000.00,
+        "net_disbursement_due": 84000.00
+      },
+      "why": "\"that invoice\" in turn 2 has no vendor/invoice of its own -- must resolve from turn 1's history to TechNova's INV-9, not refuse for a missing vendor. Same underlying figures as T1-partial-payment, reached via reference resolution instead of an explicit mention."
+    },
+    {
+      "id": "M2-topic-change-no-false-continuity",
+      "turns": [
+        "How much is pending for TechNova Software Solutions on invoice INV-9?",
+        "What GST rate applies to Furniture purchases in general?"
+      ],
+      "expected_final": {
+        "category_answer": true,
+        "gst_rate_pct": 18.0,
+        "note_contains": "category-level answer"
+      },
+      "why": "The most important multi-turn case, not the pronoun one: turn 2 is a fresh, vendor-less category question (and TechNova is a Software vendor, not Furniture) -- it must take the Category branch cleanly, with zero attempt to attach \"Furniture\" to TechNova just because a vendor exists in history. False continuity is worse than missed continuity -- the multi-turn analog of A3-false-positive-check."
+    },
+    {
+      "id": "M3-recency-over-depth",
+      "turns": [
+        "How much is pending for TechNova Software Solutions on invoice INV-9?",
+        "What's the outstanding balance for Skyline Software Labs' invoice INV-13?",
+        "what's the GST rate on that?"
+      ],
+      "expected_final": {
+        "base_amount": 100000.00, "gst_amount": 18000.00, "tds_amount": 10000.00,
+        "net_disbursement_due": 108000.00
+      },
+      "why": "Turn 3's \"that\" must resolve to the MORE RECENT reference (Skyline INV-13, turn 2), not the older one (TechNova INV-9, turn 1) two exchanges back. Tests recency, not just \"does history work at all.\""
+    },
+    {
+      "id": "M4-invoice-continuity-same-vendor",
+      "turns": [
+        "How much is pending for TechNova Software Solutions on invoice INV-9?",
+        "what about invoice 17 for the same vendor?"
+      ],
+      "expected_final": {
+        "base_amount": 110000.00, "net_disbursement_due": 112200.00
+      },
+      "why": "Vendor (TechNova) must carry over from turn 1 while the invoice reference updates to 17 -- tests that vendor and invoice resolution can update independently, not just \"the whole prior context or nothing.\""
+    }
+  ],
+  "vendor_lookup_cases": [
+    {
+      "id": "V1-vendor-details-basic",
+      "turns": [
+        "How much is pending for TechNova Software Solutions on invoice INV-9?",
+        "give me this vendor details"
+      ],
+      "expected_final": {
+        "legal_name": "TechNova Software Solutions Pvt Ltd",
+        "vendor_status": "active",
+        "invoice_count": 3
+      },
+      "why": "The exact reported bug: a general vendor-info follow-up (not a balance/tax question) must resolve the vendor from history and take the new vendor_lookup branch, not fall into 'unsupported'. Also verifies the invoice list is populated (3 invoices for TechNova: INV-9, INV-17, INV-19)."
+    },
+    {
+      "id": "V2-vendor-details-state-discrepancy",
+      "turns": [
+        "What state is Prime Consulting Group registered in?"
+      ],
+      "expected_final": {
+        "legal_name": "Prime Consulting Group",
+        "registered_state": "Maharashtra",
+        "onboarding_state": "Karnataka"
+      },
+      "why": "Prime Consulting Group is the seeded vendor whose portal onboarding state (Karnataka) differs from its GSTIN-registered state (Maharashtra) -- same underlying discrepancy as T1-authority-conflict, here surfaced through the vendor_lookup path instead of a balance calculation. Confirms both values are retrieved and distinguishable, not silently collapsed to one."
+    }
+  ],
+  "uc2_new_invoice_cases": [
+    {
+      "id": "N1-draft-correct-rate",
+      "submitted_advice": {
+        "category": "Furniture",
+        "base_amount": 15000.0,
+        "gst_rate_pct": 18.0,
+        "gst_cgst": 1350.0,
+        "gst_sgst": 1350.0,
+        "tds_amount": 0.0,
+        "net_payable_claimed": 17700.0
+      },
+      "expected": {
+        "mode": "category_only",
+        "overall_match": true
+      },
+      "why": "No invoice_id at all -- a draft advice for something not yet recorded. Furniture's current rate (18%) is correctly applied and the math is internally consistent, so this should pass cleanly with no divergence, while still carrying the reduced-check note (base amount/3-way-match/eligibility unverifiable)."
+    },
+    {
+      "id": "N2-draft-stale-rate",
+      "submitted_advice": {
+        "category": "Furniture",
+        "base_amount": 15000.0,
+        "gst_rate_pct": 12.0,
+        "gst_cgst": 1000.0,
+        "gst_sgst": 1000.0,
+        "tds_amount": 0.0,
+        "net_payable_claimed": 17000.0
+      },
+      "expected": {
+        "mode": "category_only",
+        "overall_match": false,
+        "correct_gst_rate_pct": 18.0
+      },
+      "why": "The exact scenario the user hit live: an accountant drafts an advice using a rate that isn't Furniture's actual current one (12% instead of 18%) for an invoice that isn't in the system yet. Must be caught as a rate error via the category-only check, not silently accepted (the pre-fix behavior was a dead-end 'invoice not found', unable to check anything at all)."
+    }
   ]
 }

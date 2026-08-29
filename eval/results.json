@@ -1,6 +1,6 @@
 {
-  "pass_count": 15,
-  "total_count": 15,
+  "pass_count": 22,
+  "total_count": 23,
   "results": [
     {
       "id": "T1-partial-payment",
@@ -91,6 +91,54 @@
       "type": "adversarial",
       "passed": true,
       "detail": "OK [info: narration fallback used, guard=failed_fallback_used -- diff still verified correct]"
+    },
+    {
+      "id": "M1-invoice-pronoun-continuity",
+      "type": "multi_turn",
+      "passed": true,
+      "detail": "OK"
+    },
+    {
+      "id": "M2-topic-change-no-false-continuity",
+      "type": "multi_turn",
+      "passed": false,
+      "detail": "gst rate: expected 18.0, got None; expected note to mention 'category-level answer', got note=None -- a vendor/invoice got resolved when the question was actually vendor-less (false continuity from history) [info: narration fallback used, guard=None -- numbers still verified correct]"
+    },
+    {
+      "id": "M3-recency-over-depth",
+      "type": "multi_turn",
+      "passed": true,
+      "detail": "OK"
+    },
+    {
+      "id": "M4-invoice-continuity-same-vendor",
+      "type": "multi_turn",
+      "passed": true,
+      "detail": "OK"
+    },
+    {
+      "id": "V1-vendor-details-basic",
+      "type": "vendor_lookup",
+      "passed": true,
+      "detail": "OK"
+    },
+    {
+      "id": "V2-vendor-details-state-discrepancy",
+      "type": "vendor_lookup",
+      "passed": true,
+      "detail": "OK"
+    },
+    {
+      "id": "N1-draft-correct-rate",
+      "type": "uc2_new_invoice",
+      "passed": true,
+      "detail": "OK [info: narration fallback used, guard=failed_fallback_used -- diff still verified correct]"
+    },
+    {
+      "id": "N2-draft-stale-rate",
+      "type": "uc2_new_invoice",
+      "passed": true,
+      "detail": "OK"
     }
   ]
 }

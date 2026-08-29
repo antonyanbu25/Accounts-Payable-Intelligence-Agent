@@ -30,23 +30,24 @@ HEADERS = {"X-N8N-API-KEY": N8N_KEY, "Content-Type": "application/json"}
 PARSE_INTENT_BODY_EXPR = """={{ JSON.stringify({
   model: "claude-sonnet-4-5-20250929",
   max_tokens: 300,
+  temperature: 0,
   tools: [{
     name: "parse_ap_question",
-    description: "Parse an accounts-payable question into structured intent. If the question does not ask about a vendor balance or tax treatment, set intent to 'unsupported'.",
+    description: "Parse the LATEST user question (the last item in messages) into structured intent. If earlier turns are present in messages, use them ONLY to resolve a pronoun or implicit reference in the latest question ('them', 'that vendor', 'the same invoice') -- never to re-answer a question the user isn't currently asking, and never to keep a fact 'active' once the conversation has moved on to something unrelated. If the latest question does not ask about a vendor balance, tax treatment, or general vendor information, set intent to 'unsupported'.",
     input_schema: {
       type: "object",
       properties: {
-        intent: {type: "string", enum: ["balance_lookup","tax_lookup","combined_lookup","unsupported"]},
-        vendor_name_mentioned: {type: "string", description: "The vendor name as mentioned in the question, verbatim, or empty string if the question is about a purchase category in general rather than a specific vendor."},
-        invoice_id_mentioned: {type: ["integer","null"], description: "If the question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12). If no specific invoice is referenced, use null -- do not guess one."},
-        category_mentioned: {type: ["string","null"], enum: ["Furniture","Software","Services","Food","Appliances",null], description: "If the question is about a purchase category in general (no specific vendor named), which of these fixed categories it refers to. Null if a specific vendor was named instead, or if no category is identifiable."},
+        intent: {type: "string", enum: ["balance_lookup","tax_lookup","combined_lookup","vendor_lookup","unsupported"], description: "'vendor_lookup' is for general vendor information that ISN'T a specific balance or tax calculation -- e.g. 'what state is this vendor registered in', 'what other invoices does this vendor have', 'give me this vendor's details', 'is this vendor active or blocked'. Use 'balance_lookup'/'tax_lookup'/'combined_lookup' only when the question is actually asking to compute or state a monetary/tax figure for a specific invoice or transaction."},
+        vendor_name_mentioned: {type: "string", description: "The vendor the LATEST question is about. If it names a vendor, use that name verbatim. If it instead refers back to a vendor via a pronoun or implicit reference ('them', 'that vendor', 'the same company') and exactly one vendor was discussed in the immediately preceding turn(s), use that vendor's name as it appeared earlier. If the latest question is a fresh question that doesn't reference any vendor (e.g. a category-only question, or a change of topic), leave this empty even if a different vendor was named earlier -- do not default to the last-mentioned vendor just because one exists in the history."},
+        invoice_id_mentioned: {type: ["integer","null"], description: "If the latest question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12). If it instead unambiguously refers back to a specific invoice discussed in the immediately preceding turn (e.g. 'is that invoice correctly taxed?' right after INV-17 was discussed), use that invoice's id. Do NOT carry an invoice id forward from earlier in the conversation once the topic has moved on -- if the latest question names a different vendor, or doesn't itself imply continuity with a specific invoice, use null. Never guess one."},
+        category_mentioned: {type: ["string","null"], enum: ["Furniture","Software","Services","Food","Appliances",null], description: "If the latest question is about a purchase category in general (no specific vendor named or resolved from history), which of these fixed categories it refers to. Null if a specific vendor was named (or resolved from history) instead, or if no category is identifiable in the latest question itself."},
         explicit_date_mentioned: {type: ["string","null"], description: "If the question states ANY date reference -- a full date ('1 September 2025' -> 2025-09-01), or just a bare year ('in 2010', 'during 2018') -> use January 1 of that year (2010-01-01, 2018-01-01). Null ONLY if no date or year is mentioned at all -- do not default to today yourself, that is handled downstream."}
       },
       required: ["intent","vendor_name_mentioned","invoice_id_mentioned","category_mentioned","explicit_date_mentioned"]
     }
   }],
   tool_choice: {type:"tool", name:"parse_ap_question"},
-  messages: [{role:"user", content: $json.body.question}]
+  messages: ($json.body.history || []).map(h => ({role: h.role, content: h.content})).concat([{role:"user", content: $json.body.question}])
 }) }}"""
 
 # Switched from symmetric similarity() to word_similarity() after Day-5
@@ -79,7 +80,8 @@ RETRIEVE_FACTS_SQL_TEMPLATE = """SELECT
   COALESCE((SELECT SUM(amount) FROM advance WHERE applied_against_invoice_id = i.invoice_id), 0) AS advances_applied,
   COALESCE((SELECT SUM(amount) FROM advance WHERE vendor_id = v.vendor_id AND applied_against_invoice_id IS NULL), 0) AS unapplied_advances,
   COALESCE((SELECT SUM(amount) FROM credit_note WHERE invoice_id = i.invoice_id), 0) AS credits_applied,
-  COALESCE((SELECT SUM(amount) FROM payment WHERE invoice_id = i.invoice_id), 0) AS payments_made
+  COALESCE((SELECT SUM(amount) FROM payment WHERE invoice_id = i.invoice_id), 0) AS payments_made,
+  (SELECT COUNT(*) FROM invoice WHERE vendor_id = v.vendor_id AND status = 'open') AS vendor_open_invoice_count
 FROM invoice i
 JOIN vendor_master v ON i.vendor_id = v.vendor_id
 JOIN vendor_onboarding vo ON v.vendor_id = vo.vendor_id
@@ -108,6 +110,61 @@ RETRIEVE_FACTS_SQL_EXPR = ("={{ (() => {\n"
     f"  const template = `{RETRIEVE_FACTS_SQL_TEMPLATE}`;\n"
     "  return template.replace('__VENDOR_ID__', vendorId).replace('__INVOICE_FILTER__', invFilter).replace('__ORDER_CLAUSE__', orderClause);\n"
     "})() }}")
+
+# --- Vendor-lookup path: general vendor info (state, status, other
+# invoices), NOT a balance/tax calculation -- no /tax-lookup, no /compute
+# call at all, this is a pure data retrieval + narration. json_agg bundles
+# the invoice list into one row from one query, matching this file's
+# existing style (RETRIEVE_FACTS_SQL_TEMPLATE's COALESCE subqueries) rather
+# than adding a second Postgres node for a one-to-many list.
+RETRIEVE_VENDOR_DETAILS_SQL_TEMPLATE = """SELECT
+  v.legal_name, v.gstin, v.registered_state, v.pan, v.payment_terms, v.status AS vendor_status,
+  vo.submitted_state AS onboarding_state, vo.onboarding_status, TO_CHAR(vo.onboarding_date, 'YYYY-MM-DD') AS onboarding_date,
+  (SELECT json_agg(json_build_object(
+      'invoice_id', i.invoice_id, 'category', c.category_name, 'base_amount', i.base_amount,
+      'invoice_date', TO_CHAR(i.invoice_date, 'YYYY-MM-DD'), 'status', i.status
+    ) ORDER BY i.invoice_date DESC)
+   FROM invoice i JOIN category c ON i.category_id = c.category_id
+   WHERE i.vendor_id = v.vendor_id) AS invoices
+FROM vendor_master v
+JOIN vendor_onboarding vo ON v.vendor_id = vo.vendor_id
+WHERE v.vendor_id = __VENDOR_ID__;"""
+
+RETRIEVE_VENDOR_DETAILS_SQL_EXPR = ("={{ (() => {\n"
+    "  const vendorId = $('Resolve Vendor').first().json.vendor_id;\n"
+    f"  const template = `{RETRIEVE_VENDOR_DETAILS_SQL_TEMPLATE}`;\n"
+    "  return template.replace('__VENDOR_ID__', vendorId);\n"
+    "})() }}")
+
+NARRATE_VENDOR_DETAILS_BODY_EXPR = """={{ JSON.stringify({
+  model: "claude-sonnet-4-5-20250929",
+  max_tokens: 400,
+  messages: [{role:"user", content:
+    "Write a short (2-4 sentence), plain-language answer to a general question about a vendor (not a balance/tax calculation), using ONLY the facts in this JSON -- never invent or alter a figure, and never compute a total. If the vendor's onboarding state differs from its GSTIN-registered state, mention this briefly as a data-quality note (GSTIN is the authoritative one for tax purposes, but both are worth surfacing here). If the vendor has multiple invoices, summarize them briefly (count, and category/status pattern) rather than listing every field of every one -- the evidence panel already shows the full list. Vendor details: " + JSON.stringify($json)
+  }]
+}) }}"""
+
+CHECK_NARRATION_VENDOR_BODY_EXPR = """={{ (() => {
+  const v = $('Retrieve Vendor Details').first().json;
+  const invoices = v.invoices || [];
+  // Both base_amount AND invoice_id, plus the count -- a natural summary
+  // ("3 invoices, the largest being INV-19 at Rs 1,30,000") mentions all
+  // three kinds of number, not just currency figures.
+  const nums = [];
+  invoices.forEach(inv => { nums.push(Number(inv.base_amount)); nums.push(Number(inv.invoice_id)); });
+  nums.push(invoices.length);
+  // payment_terms (e.g. "Net 30") can embed a legitimate number the
+  // narration is likely to repeat -- found live: the guard rejected a
+  // narration that said "Net 30 payment terms" because "30" wasn't in
+  // structured_values. Extract digits from it directly rather than
+  // guessing which other fields might someday contain a number too.
+  const termsMatch = (v.payment_terms || "").match(/\\d+/g);
+  if (termsMatch) { termsMatch.forEach(n => nums.push(Number(n))); }
+  return JSON.stringify({
+    narrative_text: $json.content[0].text,
+    structured_values: nums
+  });
+})() }}"""
 
 TAX_LOOKUP_BODY_EXPR = """={{ JSON.stringify({
   category: $('Retrieve Facts').first().json.invoice_category,
@@ -146,17 +203,32 @@ COMPUTE_BODY_EXPR = """={{ (() => {
   return JSON.stringify(body);
 })() }}"""
 
-NARRATE_BODY_EXPR = """={{ JSON.stringify({
-  model: "claude-sonnet-4-5-20250929",
-  max_tokens: 400,
-  messages: [{role:"user", content:
-    "Write a short (2-4 sentence), plain-language answer to an accounts-payable question, using ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: " + $('Retrieve Facts').first().json.legal_name + ". Onboarding state on file: " + $('Retrieve Facts').first().json.onboarding_state + " (vs. GSTIN-registered state used for tax: " + $('Retrieve Facts').first().json.registered_state + " -- mention this discrepancy briefly if they differ). Structured result: " + JSON.stringify($json)
-  }]
-}) }}"""
+NARRATE_BODY_EXPR = """={{ (() => {
+  const f = $('Retrieve Facts').first().json;
+  const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input;
+  // Found live: asking a vendor-balance question with no invoice named
+  // silently returned just the most-recent invoice's figures, with nothing
+  // telling the user other open invoices exist -- risked being mistaken
+  // for the vendor's total. Disclose explicitly whenever that ambiguity is
+  // real (no invoice named AND more than one open invoice exists).
+  const ambiguous = !parsed.invoice_id_mentioned && Number(f.vendor_open_invoice_count) > 1;
+  const ambiguityNote = ambiguous
+    ? (" This vendor has " + f.vendor_open_invoice_count + " open invoices in total, and no specific invoice was named in the question -- this data covers only invoice #" + f.invoice_id + " (the most recent one). You MUST say so explicitly and briefly, so this is never mistaken for the vendor's total balance across all invoices.")
+    : "";
+  return JSON.stringify({
+    model: "claude-sonnet-4-5-20250929",
+    max_tokens: 400,
+    messages: [{role:"user", content:
+      "Write a short (2-4 sentence), plain-language answer to an accounts-payable question, using ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: " + f.legal_name + ". Onboarding state on file: " + f.onboarding_state + " (vs. GSTIN-registered state used for tax: " + f.registered_state + " -- mention this discrepancy briefly if they differ)." + ambiguityNote + " Structured result: " + JSON.stringify($json)
+    }]
+  });
+})() }}"""
 
 CHECK_NARRATION_BODY_EXPR = """={{ (() => {
   const c = $('Compute').first().json;
-  const nums = [c.base_amount, c.gross_liability, c.net_disbursement_due, c.tds_amount, c.pre_tax_ledger_position];
+  const f = $('Retrieve Facts').first().json;
+  const nums = [c.base_amount, c.gross_liability, c.net_disbursement_due, c.tds_amount, c.pre_tax_ledger_position,
+                Number(f.invoice_id), Number(f.vendor_open_invoice_count)];
   if (c.gst) { nums.push(c.gst.gst_amount, c.gst.cgst, c.gst.sgst, c.gst.igst); }
   return JSON.stringify({
     narrative_text: $json.content[0].text,
@@ -282,12 +354,53 @@ nodes = [
             "={{ $json.content.find(c => c.type === 'tool_use').input.intent }}",
             "unsupported", "string", "notEquals"),
     respond_node("Respond Unsupported", "respond_unsupported", 520, 620,
-        "={{ JSON.stringify({ error: 'unsupported', message: 'This assistant only answers questions about vendor balances and tax treatment in the accounts payable system -- it can\\'t help with that.' }) }}"),
+        "={{ JSON.stringify({ error: 'unsupported', message: 'This assistant only answers questions about vendor balances, tax treatment, and general vendor information in the accounts payable system -- it can\\'t help with that.' }) }}"),
     postgres_node("Resolve Vendor", RESOLVE_VENDOR_SQL, "resolve_vendor", 660, 400, always_output=True),
+    # Ambiguity gate, BEFORE "Vendor Found?": RESOLVE_VENDOR_SQL deliberately
+    # returns up to 5 candidates (see its comment -- the seeded "Acme" pair
+    # scores 1.0/1.0), but every downstream node keys off .first(), which
+    # used to mean an ambiguous name silently answered with whichever
+    # candidate happened to sort first, with the other never mentioned.
+    # A raw ">1 row" check was tried first and rejected after live testing:
+    # a full/multi-word query like "Acme Traders" legitimately has a single
+    # correct match (score 1.0) but ALSO clears the 0.4 threshold against an
+    # unrelated vendor purely on a shared generic word ("...Traders", score
+    # 0.615) -- that's a weak coincidental second row, not a genuine tie, and
+    # flagging it as ambiguous would be a new false-refusal regression.
+    # Comparing the gap between the top two scores separates this correctly:
+    # the real "Acme"/"Acme" tie has a gap of 0; every other real query
+    # tested (full legal names, "Acme Traders", "Techno Sofware Solutionz")
+    # has a gap >= 0.29. 0.2 sits cleanly between, with margin either way.
+    if_node("Vendor Ambiguous?", "vendor_ambiguous_if", 720, 520,
+            "={{ (() => { const rows = $('Resolve Vendor').all(); "
+            "if (rows.length < 2) return 1; "
+            "return rows[0].json.score - rows[1].json.score; })() }}",
+            0.2, "number", "lt"),
+    respond_node("Respond Vendor Ambiguous", "respond_vendor_ambiguous", 900, 620,
+        "={{ (() => { const names = $('Resolve Vendor').all().map(item => item.json.legal_name); "
+        "const asked = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.vendor_name_mentioned; "
+        "return JSON.stringify({ error: 'ambiguous_vendor', message: '\"' + asked + '\" matches multiple vendors on file: ' + "
+        "names.join(', ') + '. Please specify which one you mean.', candidates: names }); })() }}"),
     if_node("Vendor Found?", "vendor_found_if", 780, 400,
             "={{ $json.vendor_id }}", "", "string", "notEmpty"),
+    if_node("Is Vendor Lookup?", "vendor_lookup_if", 900, 260,
+            "={{ $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.intent }}",
+            "vendor_lookup", "string", "equals"),
 
-    # ---- Branch A: vendor was resolved -> full transactional path ----
+    # ---- Branch A1: vendor was resolved AND it's a general vendor-info
+    # question -- pure retrieval + narration, no tax/compute involved at all ----
+    postgres_node("Retrieve Vendor Details", RETRIEVE_VENDOR_DETAILS_SQL_EXPR[1:], "retrieve_vendor_details", 1040, 60),
+    http_node("Narrate Vendor Details", "https://api.anthropic.com/v1/messages", NARRATE_VENDOR_DETAILS_BODY_EXPR,
+              "narrate_vendor_details", 1300, 60, anthropic_headers),
+    http_node("Check Narration Vendor", f"{FASTAPI_BASE}/check-narration", CHECK_NARRATION_VENDOR_BODY_EXPR,
+              "check_narration_vendor", 1560, 60),
+    if_node("Guard Passed Vendor?", "guard_if_vendor", 1820, 60, "={{ $json.passed }}", True, "boolean", "true"),
+    respond_node("Respond OK Vendor", "respond_ok_vendor", 2080, 0,
+        "={{ JSON.stringify({ narrative: $('Narrate Vendor Details').first().json.content[0].text, evidence: $('Retrieve Vendor Details').first().json, guard: 'passed', note: 'general vendor information, not a balance/tax calculation' }) }}"),
+    respond_node("Respond Fallback Vendor", "respond_fallback_vendor", 2080, 160,
+        "={{ (() => { const v = $('Retrieve Vendor Details').first().json; return JSON.stringify({ narrative: v.legal_name + ' -- status: ' + v.vendor_status + ', ' + (v.invoices ? v.invoices.length : 0) + ' invoice(s) on file. [Narration guard rejected the AI-generated explanation as containing an unverified number; showing the retrieved data directly.]', evidence: v, guard: 'failed_fallback_used' }); })() }}"),
+
+    # ---- Branch A2: vendor was resolved AND it's a balance/tax question -- full transactional path ----
     postgres_node("Retrieve Facts", RETRIEVE_FACTS_SQL_EXPR[1:], "retrieve_facts", 1040, 260),
     http_node("Tax Lookup", f"{FASTAPI_BASE}/tax-lookup", TAX_LOOKUP_BODY_EXPR, "tax_lookup", 1300, 260),
     http_node("Compute", f"{FASTAPI_BASE}/compute", COMPUTE_BODY_EXPR, "compute", 1560, 260),
@@ -325,9 +438,19 @@ connections = {
     "Parse Intent": {"main": [[{"node": "Intent Supported?", "type": "main", "index": 0}]]},
     "Intent Supported?": {"main": [[{"node": "Resolve Vendor", "type": "main", "index": 0}],
                                     [{"node": "Respond Unsupported", "type": "main", "index": 0}]]},
-    "Resolve Vendor": {"main": [[{"node": "Vendor Found?", "type": "main", "index": 0}]]},
-    "Vendor Found?": {"main": [[{"node": "Retrieve Facts", "type": "main", "index": 0}],
+    "Resolve Vendor": {"main": [[{"node": "Vendor Ambiguous?", "type": "main", "index": 0}]]},
+    "Vendor Ambiguous?": {"main": [[{"node": "Respond Vendor Ambiguous", "type": "main", "index": 0}],
+                                    [{"node": "Vendor Found?", "type": "main", "index": 0}]]},
+    "Vendor Found?": {"main": [[{"node": "Is Vendor Lookup?", "type": "main", "index": 0}],
                                 [{"node": "Category Mentioned?", "type": "main", "index": 0}]]},
+    "Is Vendor Lookup?": {"main": [[{"node": "Retrieve Vendor Details", "type": "main", "index": 0}],
+                                    [{"node": "Retrieve Facts", "type": "main", "index": 0}]]},
+
+    "Retrieve Vendor Details": {"main": [[{"node": "Narrate Vendor Details", "type": "main", "index": 0}]]},
+    "Narrate Vendor Details": {"main": [[{"node": "Check Narration Vendor", "type": "main", "index": 0}]]},
+    "Check Narration Vendor": {"main": [[{"node": "Guard Passed Vendor?", "type": "main", "index": 0}]]},
+    "Guard Passed Vendor?": {"main": [[{"node": "Respond OK Vendor", "type": "main", "index": 0}],
+                                       [{"node": "Respond Fallback Vendor", "type": "main", "index": 0}]]},
 
     "Retrieve Facts": {"main": [[{"node": "Tax Lookup", "type": "main", "index": 0}]]},
     "Tax Lookup": {"main": [[{"node": "Compute", "type": "main", "index": 0}]]},
