@@ -24,8 +24,16 @@ def r2(value) -> float:
 # GST split (place-of-supply rule) — see tax_docs/gst_place_of_supply.md
 # --------------------------------------------------------------------------
 
-def determine_gst_split_type(vendor_state: str, office_state: str) -> str:
-    """Intra-state (same state) -> CGST+SGST. Inter-state (different) -> IGST."""
+def determine_gst_split_type(vendor_state: str, office_state: Optional[str]) -> str:
+    """Intra-state (same state) -> CGST+SGST. Inter-state (different) -> IGST.
+    No office_state at all -- a non-PO ("maverick spend") invoice has no
+    requisition/office chain to source this from -- -> UNKNOWN. Never
+    silently assumed intra-state just because that's the more common case;
+    "we can't determine this" is a real, distinct answer (see compute_gst
+    and diff.py's split_undetermined handling), same principle as the
+    category-conflict refusal below."""
+    if not office_state:
+        return "UNKNOWN"
     return "CGST_SGST" if vendor_state == office_state else "IGST"
 
 
@@ -37,6 +45,12 @@ def compute_gst(base_amount: float, rate_pct: float, split_type: str) -> dict:
     gst_amount = r2(base_amount * rate_pct / 100)
     if split_type == "IGST":
         return {"gst_amount": gst_amount, "split_type": "IGST", "igst": gst_amount,
+                "cgst": None, "sgst": None}
+    if split_type == "UNKNOWN":
+        # Total GST liability is still fully correct (it only depends on
+        # rate x base, not the split) -- only the CGST/SGST-vs-IGST
+        # classification is withheld.
+        return {"gst_amount": gst_amount, "split_type": "UNKNOWN", "igst": None,
                 "cgst": None, "sgst": None}
     half = r2(gst_amount / 2)
     other_half = gst_amount - half  # keeps cgst+sgst == gst_amount exactly, even on odd totals

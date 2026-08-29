@@ -54,8 +54,12 @@ def _sub_result(lookup_result) -> TaxLookupSubResult:
 @app.post("/tax-lookup", response_model=TaxLookupResponse)
 def tax_lookup(req: TaxLookupRequest):
     corpus = get_corpus()
-    split_type_raw = determine_gst_split_type(req.vendor_state, req.office_state)
-    split_type = "CGST_SGST" if split_type_raw == "CGST_SGST" else "IGST"
+    # determine_gst_split_type already returns exactly one of "CGST_SGST" /
+    # "IGST" / "UNKNOWN" -- passed straight through, not collapsed. (Was
+    # previously silently collapsed to CGST_SGST/IGST, so an UNKNOWN would
+    # have been coerced into a claimed-CGST_SGST answer the moment this
+    # branch was added -- caught before ever running.)
+    split_type = determine_gst_split_type(req.vendor_state, req.office_state)
 
     gst_result = corpus.lookup_rate("GST_RATE", req.category, req.hsn_or_sac, req.invoice_date)
     tds_result = None
@@ -139,6 +143,7 @@ def do_diff(req: DiffRequest):
                 for f in result.fields],
         eligible=result.eligible, eligibility_reasons=result.eligibility_reasons,
         unapplied_advance_advisory=result.unapplied_advance_advisory,
+        split_undetermined=result.split_undetermined, split_undetermined_note=result.split_undetermined_note,
     )
 
 

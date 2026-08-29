@@ -1,6 +1,6 @@
 {
-  "pass_count": 22,
-  "total_count": 23,
+  "pass_count": 24,
+  "total_count": 25,
   "results": [
     {
       "id": "T1-partial-payment",
@@ -90,7 +90,7 @@
       "id": "A4-multi-error-advice",
       "type": "adversarial",
       "passed": true,
-      "detail": "OK [info: narration fallback used, guard=failed_fallback_used -- diff still verified correct]"
+      "detail": "OK"
     },
     {
       "id": "M1-invoice-pronoun-continuity",
@@ -137,6 +137,18 @@
     {
       "id": "N2-draft-stale-rate",
       "type": "uc2_new_invoice",
+      "passed": true,
+      "detail": "OK"
+    },
+    {
+      "id": "C1-skyline-tax-rate-change",
+      "type": "comparison",
+      "passed": true,
+      "detail": "OK"
+    },
+    {
+      "id": "C2-comparison-one-invoice-missing",
+      "type": "comparison",
       "passed": true,
       "detail": "OK"
     }

@@ -10,7 +10,10 @@ class TaxLookupRequest(BaseModel):
     hsn_or_sac: str
     invoice_date: date
     vendor_state: str
-    office_state: str
+    # Optional: a non-PO ("maverick spend") invoice has no requisition/office
+    # chain to source this from. None is a real, distinct answer -- not an
+    # error -- and is handled explicitly (see determine_gst_split_type).
+    office_state: Optional[str] = None
     needs_tds: bool = True
 
 
@@ -102,6 +105,13 @@ class DiffResponse(BaseModel):
     # this; UC2 was silently dropping it at this response boundary before
     # it ever reached the diff or the narration.
     unapplied_advance_advisory: Optional[float] = None
+    # True when the true CGST/SGST-vs-IGST split couldn't be determined
+    # (a non-PO invoice with no linked office to compare against the
+    # vendor's state) -- base_amount/gst_rate_pct/tds_amount/net_payable
+    # are still fully verified in this case, only the split classification
+    # is withheld rather than guessed.
+    split_undetermined: bool = False
+    split_undetermined_note: str = ""
 
 
 class NarrationCheckRequest(BaseModel):

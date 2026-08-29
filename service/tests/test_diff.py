@@ -80,6 +80,33 @@ def test_blocked_vendor_flagged_even_when_numbers_match():
     assert any("blocked" in r for r in diff.eligibility_reasons)
 
 
+def test_non_po_invoice_split_undetermined_skips_split_fields_not_verified_as_verified():
+    """Regression test: a non-PO invoice (INV-20 in the seed data) has no
+    linked office, so the true GST split is genuinely unknown. The diff must
+    NOT compare gst_cgst/gst_sgst/gst_igst against a fabricated guess (that
+    would either wrongly fail a correct advice or wrongly pass a wrong one)
+    -- it must flag split_undetermined instead, while still fully verifying
+    base_amount/gst_rate_pct/tds_amount/net_payable."""
+    from compute import determine_gst_split_type
+    split = determine_gst_split_type("Karnataka", None)
+    facts = LedgerFacts(base_amount=8000.00, po_amount=None, receipt_amount=None)
+    tax = TaxDetermination(gst_rate_pct=5.0, tds_rate_pct=2.0, tds_section="194C", split_type=split)
+    true_result = compute(facts, tax)
+    # Accountant submits a CGST/SGST split -- their own guess, since they
+    # also have no office to verify against.
+    advice = {"base_amount": 8000.00, "gst_rate_pct": 5.0, "gst_cgst": 200.0, "gst_sgst": 200.0,
+              "tds_amount": true_result.tds_amount, "net_payable_claimed": true_result.net_disbursement_due}
+    diff = diff_advice(true_result, advice)
+    assert diff.split_undetermined is True
+    assert diff.split_undetermined_note  # non-empty, explains why
+    field_names = {f.field for f in diff.fields}
+    assert "gst_cgst" not in field_names and "gst_sgst" not in field_names and "gst_igst" not in field_names
+    # Every field that COULD be verified was, and the advice above is
+    # correct on all of them -- overall_match must be True, not dragged
+    # down by the split it deliberately doesn't grade.
+    assert diff.overall_match is True
+
+
 def test_tolerance_absorbs_one_rupee_rounding_noise():
     facts = LedgerFacts(base_amount=100000.00, po_amount=100000.00, receipt_amount=100000.00)
     tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=10.0, tds_section="194J", split_type="CGST_SGST")

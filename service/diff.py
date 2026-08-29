@@ -48,6 +48,15 @@ class DiffResult:
     # "correct" advice for an invoice with an unapplied advance on file must
     # never read as unconditionally safe to pay in full.
     unapplied_advance_advisory: Optional[float] = None
+    # True when the true GST split (compute.py's determine_gst_split_type)
+    # came back "UNKNOWN" -- a non-PO invoice with no office to compare the
+    # vendor's state against. gst_cgst/gst_sgst/gst_igst are deliberately
+    # NOT added to `fields` in this case (there is no true value to grade
+    # them against -- comparing to a fabricated same-state guess would be
+    # worse than not comparing at all); base_amount/gst_rate_pct/tds_amount/
+    # net_payable are still fully verified and graded as normal.
+    split_undetermined: bool = False
+    split_undetermined_note: str = ""
 
 
 def _compare(field_name: str, claimed, correct, reason_if_mismatch: str) -> FieldDiff:
@@ -83,7 +92,12 @@ def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: st
                   "GST rate does not match the applicable rate for this category and date."),
     ]
 
-    if gst.get("split_type") == "IGST":
+    split_undetermined = gst.get("split_type") == "UNKNOWN"
+    split_note = ""
+    if split_undetermined:
+        split_note = ("This invoice has no linked purchase order/office on file, so the CGST/SGST-vs-IGST "
+                       "split can't be independently verified — only the total GST amount above was checked.")
+    elif gst.get("split_type") == "IGST":
         fields.append(_compare("gst_igst", submitted.get("gst_igst"), gst.get("igst"),
                                 "Submitted advice does not use IGST, but vendor and office are in different states."))
     else:
@@ -105,4 +119,5 @@ def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: st
     overall = all(f.match for f in fields)
     return DiffResult(overall_match=overall, fields=fields, eligible=is_eligible,
                        eligibility_reasons=eligibility_reasons,
-                       unapplied_advance_advisory=true_result.unapplied_advance_advisory)
+                       unapplied_advance_advisory=true_result.unapplied_advance_advisory,
+                       split_undetermined=split_undetermined, split_undetermined_note=split_note)

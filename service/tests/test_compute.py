@@ -204,6 +204,37 @@ def test_non_po_invoice_has_no_3way_match():
     assert r.eligibility == "eligible"  # absence of a PO isn't itself a block in this design
 
 
+def test_determine_gst_split_type_unknown_with_no_office_state():
+    """Regression test for a real bug: a non-PO invoice has no requisition/
+    office chain, so office_state comes back None from the DB join. This
+    must resolve to a distinct "UNKNOWN" answer, never silently default to
+    CGST_SGST (which would misrepresent an unverified guess as a checked
+    fact) and never raise (the actual bug -- FastAPI rejected office_state:
+    null with a 422, which aborted the whole n8n workflow before any
+    response node, surfacing as an empty webhook response to the frontend)."""
+    assert determine_gst_split_type("Karnataka", None) == "UNKNOWN"
+    assert determine_gst_split_type("Karnataka", "") == "UNKNOWN"
+    assert determine_gst_split_type("Karnataka", "Karnataka") == "CGST_SGST"
+    assert determine_gst_split_type("Karnataka", "Maharashtra") == "IGST"
+
+
+def test_non_po_invoice_split_undetermined_total_gst_still_correct():
+    """The total GST liability only depends on rate x base_amount, not on
+    the CGST/SGST-vs-IGST split -- so gross_liability/net_disbursement_due
+    must still compute correctly even when the split itself is unknown."""
+    split = determine_gst_split_type("Karnataka", None)
+    assert split == "UNKNOWN"
+    facts = LedgerFacts(base_amount=8000.00, po_amount=None, receipt_amount=None)
+    tax = TaxDetermination(gst_rate_pct=5.0, tds_rate_pct=0.0, tds_section=None, split_type=split)
+    r = compute(facts, tax)
+    assert r.gst["split_type"] == "UNKNOWN"
+    assert r.gst["cgst"] is None and r.gst["sgst"] is None and r.gst["igst"] is None
+    assert r.gst["gst_amount"] == 400.0  # 5% of 8000 -- still fully determined
+    assert r.gross_liability == 8400.0
+    assert r.net_disbursement_due == 8400.0
+    assert r.tax_treatment_refused is False  # NOT the same as a category conflict -- most figures ARE verified
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
