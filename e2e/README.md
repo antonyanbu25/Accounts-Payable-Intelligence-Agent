@@ -3,7 +3,7 @@
 The project has two complementary end-to-end suites:
 
 - `service/tests/test_api_workflow_e2e.py` is the fast, deterministic suite. It calls the real FastAPI application, real tax corpus, `/tax-lookup`, `/compute`, and `/diff` endpoints in the same order as the workflow. It runs locally on every change and makes no network calls.
-- `e2e/test_live_workflows.py` is the deployment smoke suite. It calls the same n8n webhooks as Streamlit, so it validates the deployed path: n8n -> Postgres -> FastAPI -> response contract. It only performs `SELECT`-style retrieval and must be explicitly enabled.
+- `e2e/test_live_workflows.py` is the deployment smoke suite. It calls the same `/webhook/uc1-ask` + `/webhook/uc2-validate` routes as Streamlit -- now served directly by the FastAPI orchestrator -- so it validates the deployed path: orchestration -> Postgres -> compute/diff -> response contract. It only performs `SELECT`-style retrieval and must be explicitly enabled.
 
 ## Run before deployment
 
@@ -17,11 +17,11 @@ This runs unit tests plus the deterministic API workflow suite.
 
 ## Run after deployment
 
-Set the n8n public base URL, without a trailing slash. This URL is not a database credential and is safe to place in a local shell command.
+Set the deployed FastAPI service's public base URL, without a trailing slash. This URL is not a database credential and is safe to place in a local shell command.
 
 ```bash
 RUN_LIVE_E2E=1 \
-E2E_N8N_BASE_URL=https://your-n8n-service.onrender.com \
+E2E_ORCHESTRATOR_BASE_URL=https://ap-agent-service.onrender.com \
 python3 -m pytest e2e -v -m live_e2e
 ```
 

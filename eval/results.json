@@ -132,7 +132,7 @@
       "id": "N1-draft-correct-rate",
       "type": "uc2_new_invoice",
       "passed": true,
-      "detail": "OK [info: narration fallback used, guard=failed_fallback_used -- diff still verified correct]"
+      "detail": "OK"
     },
     {
       "id": "N2-draft-stale-rate",

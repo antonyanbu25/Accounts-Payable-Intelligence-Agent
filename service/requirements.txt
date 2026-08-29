@@ -1,18 +1,26 @@
 # Runtime dependencies for the DEPLOYED service only (main.py and everything
 # it imports: compute.py, diff.py, narration_guard.py, models.py,
-# tax_lookup.py). Verified by grep/AST that this import chain needs none of
-# torch, sentence-transformers, anthropic, or psycopg2-binary -- those are
-# one-time LOCAL TOOLING dependencies for ingest.py only (see
-# requirements-ingest.txt), never loaded by the live-serving process.
+# tax_lookup.py, db.py, anthropic_client.py, uc1_orchestration.py,
+# uc2_orchestration.py). This chain still needs neither torch nor
+# sentence-transformers -- those remain one-time LOCAL TOOLING dependencies
+# for ingest.py only (see requirements-ingest.txt), never loaded by the
+# live-serving process.
 #
-# This split is what fixed a real Render free-tier (512Mi) out-of-memory
-# crash: sentence-transformers/torch were previously installed and *loaded*
-# on every deploy just to rebuild a search index that doesn't change between
-# deploys. Now the deploy only reads the pre-built index committed at
-# service/chroma_db/ (see that directory's README), so those heavy
-# dependencies never need to be installed on Render at all.
+# The torch/sentence-transformers split is what fixed a real Render
+# free-tier (512Mi) out-of-memory crash: those were previously installed
+# and *loaded* on every deploy just to rebuild a search index that doesn't
+# change between deploys. Now the deploy only reads the pre-built index
+# committed at service/chroma_db/ (see that directory's README), so those
+# heavy dependencies never need to be installed on Render at all.
+#
+# psycopg2-binary and anthropic ARE now part of the deployed import chain
+# (added when orchestration moved in-process, replacing n8n) -- both are
+# lightweight and were not the cause of the OOM above, so adding them here
+# does not reintroduce that risk.
 fastapi
 uvicorn[standard]
 python-dotenv
 chromadb
 pydantic
+psycopg2-binary
+anthropic

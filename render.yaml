@@ -1,4 +1,4 @@
-# Render Blueprint — deploys all three application services.
+# Render Blueprint — deploys the two application services.
 #
 # The Postgres database is NOT declared here: it already exists (created
 # directly on Render before this Blueprint), so this file references it via
@@ -6,81 +6,27 @@
 # those values are never written into this file or committed to git.
 #
 # After connecting: Render will ask for every "sync: false" value below.
-# Have ready: your Anthropic API key, and the database connection details
-# (from the existing Postgres instance's "Connect" page: host, port,
-# database name, user, password).
+# Have ready: your Anthropic API key, and the database connection URL
+# (from the existing Postgres instance's "Connect" page).
+#
+# n8n was removed from this architecture (see the n8n-removal migration) --
+# what used to be a third service (a self-hosted n8n container orchestrating
+# calls back into ap-agent-service over HTTP) is now two extra routes
+# (/webhook/uc1-ask, /webhook/uc2-validate) directly on ap-agent-service
+# itself, calling the same compute/tax-lookup/diff/guard logic as plain
+# in-process Python function calls instead of network round-trips.
 
 services:
   # ---------------------------------------------------------------------
-  # n8n — orchestration. Uses the official public Docker image directly,
-  # no Dockerfile needed. Configured to use the existing Postgres database
-  # (in its own 'n8n' schema) for its own storage, so workflows and
-  # credentials survive restarts and redeploys on Render's ephemeral disk.
-  # ---------------------------------------------------------------------
-  - type: web
-    name: ap-agent-n8n
-    runtime: image
-    image:
-      url: docker.io/n8nio/n8n:latest
-    # standard (2GB RAM), not free -- n8n's baseline footprint (task broker +
-    # full node-type registry, loaded even at idle) reliably exceeds 512MB
-    # and crash-loops on Free/Starter. Confirmed via production logs: a
-    # repeating "JavaScript heap out of memory" crash every ~90s at idle,
-    # before any workflow ever ran. Render's own docs put n8n's minimum at
-    # 1GB even for light personal use -- this isn't over-provisioning.
-    plan: standard
-    envVars:
-      - key: N8N_PORT
-        value: 10000
-      - key: PORT
-        value: 10000
-      - key: N8N_PROTOCOL
-        value: https
-      # Predicted from the service name below (Render's default URL pattern
-      # is https://<service-name>.onrender.com). If Render assigns a
-      # different subdomain (e.g. due to a name collision), update these two
-      # values to match after the first deploy -- everything else is fine.
-      - key: N8N_HOST
-        value: ap-agent-n8n.onrender.com
-      - key: WEBHOOK_URL
-        value: https://ap-agent-n8n.onrender.com/
-      - key: DB_TYPE
-        value: postgresdb
-      - key: DB_POSTGRESDB_SCHEMA
-        value: n8n
-      - key: DB_POSTGRESDB_HOST
-        sync: false
-      - key: DB_POSTGRESDB_PORT
-        value: 5432
-      - key: DB_POSTGRESDB_DATABASE
-        sync: false
-      - key: DB_POSTGRESDB_USER
-        sync: false
-      - key: DB_POSTGRESDB_PASSWORD
-        sync: false
-      # Render's managed Postgres requires SSL. reject_unauthorized is set
-      # false because Render's cert isn't in n8n's default CA trust store --
-      # same reasoning already applied to the "AP Postgres" credential n8n
-      # uses to query our own AP data (allowUnauthorizedCerts: true there).
-      - key: DB_POSTGRESDB_SSL_ENABLED
-        value: true
-      - key: DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED
-        value: false
-      - key: N8N_ENCRYPTION_KEY
-        sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: N8N_BLOCK_ENV_ACCESS_IN_NODE
-        value: false
-
-  # ---------------------------------------------------------------------
-  # Python/FastAPI — deterministic compute, tax lookup, diff, and the
-  # narration guard. Reads the pre-built tax-document search index
-  # committed at service/chroma_db/ (read-only) rather than rebuilding it
-  # on every deploy. Rebuilding at deploy time meant installing and
-  # *loading* torch/sentence-transformers just to re-embed documents that
-  # hadn't changed -- that's what caused an out-of-memory crash on Render's
-  # free tier. Regenerate the index locally with
+  # Python/FastAPI — deterministic compute, tax lookup, diff, the
+  # narration guard, AND (as of the n8n-removal migration) the UC1/UC2
+  # orchestration itself: Parse Intent, vendor resolution, retrieval, and
+  # narration, all in-process. Reads the pre-built tax-document search
+  # index committed at service/chroma_db/ (read-only) rather than
+  # rebuilding it on every deploy. Rebuilding at deploy time meant
+  # installing and *loading* torch/sentence-transformers just to re-embed
+  # documents that hadn't changed -- that's what caused an out-of-memory
+  # crash on Render's free tier. Regenerate the index locally with
   # `pip install -r requirements-ingest.txt && python ingest.py` whenever
   # tax_docs/ changes, then re-commit service/chroma_db/.
   # ---------------------------------------------------------------------
@@ -92,18 +38,24 @@ services:
     # spin-down (confirmed via Render's own docs: that behavior is scoped
     # explicitly to "Free web service", not to paid instance types).
     # 512MB is already proven sufficient here (see the OOM-fix commit) --
-    # this is not a resource upgrade, only an always-on one.
+    # this is not a resource upgrade, only an always-on one. Adding
+    # psycopg2-binary + anthropic to requirements.txt for orchestration
+    # does not change this: both are lightweight, and the OOM cause above
+    # was specifically torch/sentence-transformers, never these two.
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: DATABASE_URL
+        sync: false
 
   # ---------------------------------------------------------------------
   # Streamlit — the chat UI, UC2 validation, and the browse-data tab.
-  # Talks to n8n's public webhook URL and reads Postgres directly (for
-  # the browse-data tab only — never for anything the agent computes).
+  # Talks to ap-agent-service's public URL for both the UC1/UC2 webhook
+  # routes and (separately) reads Postgres directly for the browse-data
+  # tab only — never for anything the agent computes.
   # ---------------------------------------------------------------------
   - type: web
     name: ap-agent-frontend
@@ -115,8 +67,11 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
-      # Same predicted-URL note as the n8n service above.
-      - key: N8N_BASE_URL
-        value: https://ap-agent-n8n.onrender.com
+      # Predicted from the service name above (Render's default URL pattern
+      # is https://<service-name>.onrender.com). If Render assigns a
+      # different subdomain (e.g. due to a name collision), update this
+      # value to match after the first deploy -- everything else is fine.
+      - key: ORCHESTRATOR_BASE_URL
+        value: https://ap-agent-service.onrender.com
       - key: DATABASE_URL
         sync: false

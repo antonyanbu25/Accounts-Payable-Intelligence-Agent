@@ -25,7 +25,7 @@
 | M4-invoice-continuity-same-vendor | multi_turn | ✅ PASS | OK |
 | V1-vendor-details-basic | vendor_lookup | ✅ PASS | OK |
 | V2-vendor-details-state-discrepancy | vendor_lookup | ✅ PASS | OK |
-| N1-draft-correct-rate | uc2_new_invoice | ✅ PASS | OK [info: narration fallback used, guard=failed_fallback_used -- diff still verified correct] |
+| N1-draft-correct-rate | uc2_new_invoice | ✅ PASS | OK |
 | N2-draft-stale-rate | uc2_new_invoice | ✅ PASS | OK |
 | C1-skyline-tax-rate-change | comparison | ✅ PASS | OK |
 | C2-comparison-one-invoice-missing | comparison | ✅ PASS | OK |

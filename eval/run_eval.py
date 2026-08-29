@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 Runs the full eval set (Tier 1 + adversarial cases) against the LIVE running
-system (n8n webhooks -> FastAPI service -> real Postgres + real tax docs).
-This is not a unit test against isolated code -- it's the actual system,
-end to end, exactly as a user would hit it.
+system (the FastAPI service's own /webhook/uc1-ask + /webhook/uc2-validate
+routes -> real Postgres + real tax docs + real Anthropic calls, all
+in-process -- n8n is no longer part of this path). This is not a unit test
+against isolated code -- it's the actual system, end to end, exactly as a
+user would hit it.
 
 Writes eval/results.json (machine-readable) and eval/results.md (human-
 readable "results page", per the plan).
@@ -16,7 +18,7 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
-N8N_BASE = os.environ.get("N8N_BASE_URL", "http://localhost:5678")
+ORCHESTRATOR_BASE = os.environ.get("ORCHESTRATOR_BASE_URL", "http://127.0.0.1:8123")
 
 with open(os.path.join(os.path.dirname(__file__), "eval_set.json")) as f:
     EVAL_SET = json.load(f)
@@ -35,7 +37,7 @@ def close(a, b, tol=TOL):
 def check_tier1(case):
     exp = case["expected"]
     try:
-        resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=60)
+        resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=60)
         data = resp.json()
     except Exception as e:
         return False, f"request failed: {e}"
@@ -62,7 +64,7 @@ def check_tier1(case):
 
 def check_a1_nonexistent_vendor(case):
     try:
-        resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=60)
+        resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=60)
         data = resp.json()
     except Exception as e:
         return False, f"request failed: {e}"
@@ -80,7 +82,7 @@ def check_a2_pre_change_date(case):
     tds.rate_pct), not /compute's shape (there's no invoice to compute a
     balance for). Checking the rate directly, not a net_disbursement_due."""
     try:
-        resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=60)
+        resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=60)
         data = resp.json()
     except Exception as e:
         return False, f"request failed: {e}"
@@ -97,7 +99,7 @@ def check_a2_pre_change_date(case):
 def check_uc2(case, expect_match):
     payload = {"invoice_id": case["invoice_id"], "submitted_advice": case["submitted_advice"]}
     try:
-        resp = requests.post(f"{N8N_BASE}/webhook/uc2-validate", json=payload, timeout=60)
+        resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc2-validate", json=payload, timeout=60)
         data = resp.json()
     except Exception as e:
         return False, f"request failed: {e}"
@@ -125,7 +127,7 @@ def check_uc2_new_invoice(case):
     actually expected, not just that SOME mismatch was found."""
     payload = {"submitted_advice": case["submitted_advice"]}
     try:
-        resp = requests.post(f"{N8N_BASE}/webhook/uc2-validate", json=payload, timeout=60)
+        resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc2-validate", json=payload, timeout=60)
         data = resp.json()
     except Exception as e:
         return False, f"request failed: {e}"
@@ -161,7 +163,7 @@ def check_vendor_lookup(case):
     data = None
     try:
         for turn_question in case["turns"]:
-            resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask",
+            resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask",
                                   json={"question": turn_question, "history": history[-(HISTORY_TURNS * 2):]},
                                   timeout=60)
             data = resp.json()
@@ -197,7 +199,7 @@ def check_comparison(case):
     response shape, so this checks per-invoice fields by invoice_id rather
     than assuming array order matches the question's order."""
     try:
-        resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=90)
+        resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=90)
         data = resp.json()
     except Exception as e:
         return False, f"request failed: {e}"
@@ -267,7 +269,7 @@ def check_multi_turn(case):
     data = None
     try:
         for turn_question in case["turns"]:
-            resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask",
+            resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask",
                                   json={"question": turn_question, "history": history[-(HISTORY_TURNS * 2):]},
                                   timeout=60)
             data = resp.json()

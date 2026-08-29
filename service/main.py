@@ -1,8 +1,14 @@
 """
 FastAPI service: the deterministic compute + tax-lookup + narration-guard
-layer. n8n calls these endpoints; this service never talks to an LLM about
-money, and the LLM never talks to this service's math directly -- n8n sits
-between them, passing structured JSON both ways.
+layer, PLUS (as of the n8n-removal migration) the UC1/UC2 orchestration
+layer itself. compute.py/diff.py/tax_lookup.py/narration_guard.py still
+never talk to an LLM about money, and the LLM never talks to their math
+directly -- that invariant is unchanged. What changed: orchestration
+(previously n8n, calling these same four routes over HTTP) now lives
+in-process, in uc1_orchestration.py/uc2_orchestration.py, calling
+tax_lookup()/do_compute()/do_diff()/check_narration_endpoint() directly as
+plain Python functions -- see the bottom-of-file import for why that's
+structured the way it is.
 """
 import os
 from functools import lru_cache
@@ -18,7 +24,8 @@ from compute import (  # noqa: E402
 from diff import diff_advice  # noqa: E402
 from models import (  # noqa: E402
     ComputeRequest, ComputeResponse, DiffRequest, DiffResponse, FieldDiffModel, NarrationCheckRequest,
-    NarrationCheckResponse, TaxLookupRequest, TaxLookupResponse, TaxLookupSubResult,
+    NarrationCheckResponse, TaxLookupRequest, TaxLookupResponse, TaxLookupSubResult, UC1AskRequest,
+    UC2ValidateRequest,
 )
 from narration_guard import check_narration  # noqa: E402
 from tax_lookup import TaxCorpus  # noqa: E402
@@ -156,3 +163,40 @@ def do_diff(req: DiffRequest):
 def check_narration_endpoint(req: NarrationCheckRequest):
     result = check_narration(req.narrative_text, req.structured_values)
     return NarrationCheckResponse(**result)
+
+
+# --------------------------------------------------------------------------
+# UC1/UC2 orchestration routes -- the native-Python replacement for n8n's
+# two webhooks. Deliberately no response_model=: each branch's response
+# shape genuinely differs (error / ambiguous-vendor / vendor-lookup /
+# comparison / single-invoice, x2 per UC) -- one superset Pydantic model
+# risks silently dropping/coercing fields across branches, which would
+# break the byte-compatible-with-the-old-n8n-response requirement these
+# exist to satisfy. Paths kept identical to n8n's own webhook paths
+# (/webhook/uc1-ask, /webhook/uc2-validate) so frontend/eval/e2e only need
+# a base-URL change, not a path change.
+#
+# uc1_orchestration.py / uc2_orchestration.py are imported here, at the
+# BOTTOM of this file, specifically because they each do
+# `from main import tax_lookup, do_compute, do_diff, check_narration_endpoint`
+# to call those four functions directly (no HTTP self-call) -- a circular
+# import if this file tried to import them at the top, before those four
+# names exist yet. By the time Python reaches this import, they're already
+# defined in this module's namespace, so the orchestration modules' own
+# `from main import ...` succeeds immediately. Anything else that wants to
+# import uc1_orchestration/uc2_orchestration directly (tests included) must
+# import `main` first for the same reason -- see those modules' docstrings.
+# --------------------------------------------------------------------------
+from uc1_orchestration import handle_uc1_ask  # noqa: E402
+from uc2_orchestration import handle_uc2_validate  # noqa: E402
+
+
+@app.post("/webhook/uc1-ask")
+def uc1_ask(req: UC1AskRequest):
+    history = [h.model_dump() for h in (req.history or [])]
+    return handle_uc1_ask(req.question, history)
+
+
+@app.post("/webhook/uc2-validate")
+def uc2_validate(req: UC2ValidateRequest):
+    return handle_uc2_validate(req.invoice_id, req.submitted_advice.model_dump(exclude_none=True), req.invoice_date)

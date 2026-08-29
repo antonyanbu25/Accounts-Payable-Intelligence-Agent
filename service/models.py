@@ -130,3 +130,26 @@ class NarrationCheckResponse(BaseModel):
     passed: bool
     numbers_found_in_narrative: list
     numbers_not_in_structured_result: list
+
+
+# --------------------------------------------------------------------------
+# UC1/UC2 orchestration request models -- the native-Python replacement for
+# n8n's UC1/UC2 webhooks (see uc1_orchestration.py / uc2_orchestration.py).
+# Response shapes are deliberately plain dict, not modeled here -- see
+# main.py's /webhook/uc1-ask and /webhook/uc2-validate route comments.
+# --------------------------------------------------------------------------
+
+class HistoryTurn(BaseModel):
+    role: str
+    content: str
+
+
+class UC1AskRequest(BaseModel):
+    question: str
+    history: Optional[list[HistoryTurn]] = None
+
+
+class UC2ValidateRequest(BaseModel):
+    invoice_id: Optional[int] = None
+    submitted_advice: SubmittedAdvice
+    invoice_date: Optional[str] = None

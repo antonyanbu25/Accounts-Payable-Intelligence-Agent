@@ -1,13 +1,15 @@
 """Read-only smoke tests for the deployed end-to-end workflows.
 
-These call the same public n8n webhooks as Streamlit.  They exercise all
-production boundaries: n8n, Postgres retrieval, Source C lookup, FastAPI
-calculation/diffing, and the response contract returned to the UI.
+These call the same public /webhook/uc1-ask + /webhook/uc2-validate routes
+as Streamlit -- now served directly by the FastAPI orchestrator (n8n was
+removed from this path). They exercise all production boundaries:
+orchestration, Postgres retrieval, Source C lookup, compute/diffing, and
+the response contract returned to the UI.
 
 They are intentionally opt-in because they use the deployed infrastructure
 and can invoke the narrative LLM.  Run with:
 
-    RUN_LIVE_E2E=1 E2E_N8N_BASE_URL=https://your-n8n-host pytest e2e -v -m live_e2e
+    RUN_LIVE_E2E=1 E2E_ORCHESTRATOR_BASE_URL=https://your-service-host pytest e2e -v -m live_e2e
 """
 
 import os
@@ -22,9 +24,9 @@ pytestmark = pytest.mark.live_e2e
 def _base_url():
     if os.environ.get("RUN_LIVE_E2E") != "1":
         pytest.skip("Live E2E is opt-in. Set RUN_LIVE_E2E=1 after deployment.")
-    url = os.environ.get("E2E_N8N_BASE_URL")
+    url = os.environ.get("E2E_ORCHESTRATOR_BASE_URL")
     if not url:
-        pytest.skip("Set E2E_N8N_BASE_URL to the deployed n8n base URL.")
+        pytest.skip("Set E2E_ORCHESTRATOR_BASE_URL to the deployed orchestrator base URL.")
     return url.rstrip("/")
 
 
@@ -62,7 +64,7 @@ def test_uc1_vendor_stated_superseded_rate_is_recomputed_from_source_c():
 
 
 def test_uc1_effective_date_changes_the_answer():
-    # The query pins the invoice ID so n8n cannot choose a newer vendor invoice.
+    # The query pins the invoice ID so the orchestrator cannot choose a newer vendor invoice.
     pre = _post(
         "uc1-ask",
         {"question": "What GST rate and net payable apply to Skyline Software Labs invoice INV-13?"},

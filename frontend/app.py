@@ -1,9 +1,13 @@
 """
 Streamlit frontend for the Accounts Payable Intelligence Agent.
 
-This is a thin client: all reasoning happens in n8n + the FastAPI service.
-This app only renders the chat, the UC2 input surface, and a read-only view
-of the mock data -- it never computes anything itself.
+This is a thin client: all reasoning happens in the FastAPI service, which
+owns both the deterministic compute/tax-lookup layer and (as of the
+n8n-removal migration) the UC1/UC2 orchestration itself -- Parse Intent,
+retrieval, narration, and the numeral guard all live there now, called via
+the same two webhook-style routes n8n used to expose. This app only renders
+the chat, the UC2 input surface, and a read-only view of the mock data -- it
+never computes anything itself.
 """
 import csv
 import html
@@ -23,7 +27,7 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-N8N_BASE = os.environ.get("N8N_BASE_URL", "http://localhost:5678")
+ORCHESTRATOR_BASE = os.environ.get("ORCHESTRATOR_BASE_URL", "http://127.0.0.1:8123")
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 # Last N user+assistant exchanges sent to Parse Intent as context, so a
@@ -969,7 +973,7 @@ with tab_ask:
                     prior_turns = st.session_state.messages[:-1]
                     history = [{"role": m["role"], "content": m["content"]}
                                for m in prior_turns[-(HISTORY_TURNS * 2):]]
-                    resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask",
+                    resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask",
                                           json={"question": question, "history": history}, timeout=90)
                     data = resp.json()
                     if "narrative" not in data and data.get("message"):
@@ -1002,8 +1006,8 @@ with tab_ask:
 _ADVICE_NUMERIC_FIELDS = ("base_amount", "gst_rate_pct", "gst_cgst", "gst_sgst",
                           "gst_igst", "tds_amount", "net_payable_claimed")
 
-# Same fixed category enum the n8n side uses (build_uc1_workflow.py's
-# category_mentioned tool field, build_uc2_workflow.py's HSN/SAC map) --
+# Same fixed category enum the orchestration side uses (uc1_orchestration.py's
+# category_mentioned tool field, shared_constants.py's HSN/SAC map) --
 # a dropdown here instead of free text avoids a typo silently producing a
 # false "category doesn't match" or "rate not found" result downstream.
 CATEGORY_OPTIONS = ["Furniture", "Software", "Services", "Food", "Appliances"]
@@ -1017,8 +1021,8 @@ def _load_invoice_options():
     Invoices table, PLUS registered_state/office_state -- these two let the
     Manual Form auto-detect CGST+SGST vs. IGST once an invoice is picked,
     instead of asking the user to choose manually. LEFT JOIN through
-    purchase_order -> requisition -> office (the same path n8n's own
-    Retrieve Facts query already uses) because po_id is nullable -- 1 of
+    purchase_order -> requisition -> office (the same path
+    db.py's retrieve_invoice_facts_uc1 query already uses) because po_id is nullable -- 1 of
     the 25 seeded invoices genuinely has no PO (non-PO/"maverick" spend,
     confirmed by querying the real data before relying on this), so
     office_state comes back NULL for that one row and the split can't be
@@ -1178,7 +1182,7 @@ def _validate_and_render(payload: dict, key_suffix: str) -> None:
 
     with st.spinner("Independently reconstructing the correct figure, then comparing..."):
         try:
-            resp = requests.post(f"{N8N_BASE}/webhook/uc2-validate", json=payload, timeout=90)
+            resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc2-validate", json=payload, timeout=90)
             result = resp.json()
         except Exception as e:
             result = {"error": "request_failed", "message": str(e)}
