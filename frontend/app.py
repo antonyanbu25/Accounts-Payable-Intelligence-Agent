@@ -868,6 +868,40 @@ with tab_browse:
         cur.execute("SELECT office_id, name, city, state FROM office ORDER BY office_id;")
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
 
+        # Source A's own "structured workflow from request to fulfillment" --
+        # previously queried nowhere in the frontend, even though it's the
+        # direct input to every three-way-match and cancelled-PO/category-
+        # conflict eligibility computation this system performs. Found by
+        # recruiter-mindset testing: that reasoning is real and correct, but
+        # was undiscoverable to anyone restricted to the live app. Read-only,
+        # same pattern as Vendors/Invoices/Offices above -- no new tables,
+        # nothing built, only surfaced.
+        st.subheader("Requisitions")
+        cur.execute("""
+            SELECT r.requisition_id, o.name AS office, r.requester, r.department,
+                   c.category_name AS category, r.estimated_amount, r.status, r.created_date
+            FROM requisition r
+            JOIN office o ON r.office_id = o.office_id
+            JOIN category c ON r.category_id = c.category_id
+            ORDER BY r.requisition_id;
+        """)
+        st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
+
+        st.subheader("Purchase Orders")
+        cur.execute("""
+            SELECT po.po_id, v.legal_name AS vendor, c.category_name AS category,
+                   po.po_amount, po.issued_date, po.status
+            FROM purchase_order po
+            JOIN vendor_master v ON po.vendor_id = v.vendor_id
+            JOIN category c ON po.category_id = c.category_id
+            ORDER BY po.po_id;
+        """)
+        st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
+
+        st.subheader("Goods Receipts")
+        cur.execute("SELECT receipt_id, po_id, received_date, received_amount, status FROM receipt ORDER BY receipt_id;")
+        st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
+
         conn.close()
     except Exception as e:
         # Never interpolate the raw exception into a user-facing message --
