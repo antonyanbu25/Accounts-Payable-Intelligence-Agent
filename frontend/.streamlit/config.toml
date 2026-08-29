@@ -1,18 +1,20 @@
 # Committed deliberately (see ../../.gitignore) -- pins the theme regardless
-# of the viewer's OS light/dark setting, and moves off Streamlit's default
-# red accent to a restrained slate-teal more in keeping with a finance tool
-# than a generic demo.
+# of the viewer's OS light/dark setting. Dark-glow restyle (see
+# design suggestions/validate-payment-advice-build-prompt.md): near-black
+# base, muted blue accent reserved for active-state indicators, the glow,
+# and small functional tags -- never a large fill.
 [theme]
-base = "light"
-primaryColor = "#3d6b6f"
-# Slightly off-white, not pure #ffffff -- gives card-like elements (metrics,
-# alerts, the chat input) something to visibly sit above via box-shadow in
-# the CSS block in app.py. Pure white-on-white has no room for elevation.
-# Hex equivalent of oklch(98% 0.003 260) -- config.toml only accepts hex/rgb,
-# not CSS color functions, so this is that value converted, not guessed.
-backgroundColor = "#f7f7f9"
-secondaryBackgroundColor = "#eef0f1"
-textColor = "#1a1f1f"
+base = "dark"
+primaryColor = "#5b8fd9"
+backgroundColor = "#0a0a0d"
+secondaryBackgroundColor = "#131316"
+textColor = "#e8e8ea"
+# Streamlit's font field only accepts a small named set ("sans serif" /
+# "serif" / "monospace") on the pinned 1.62.0 -- Inter is loaded reliably
+# via a CSS @import in the app.py stylesheet block instead, which also
+# guarantees it survives a future Streamlit version bump regardless of
+# whether font: support changes. This value is the fallback before that
+# CSS loads.
 font = "sans serif"
 
 # Streamlit's own default chrome (a "Deploy" button, and a hamburger menu

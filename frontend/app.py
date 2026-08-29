@@ -44,81 +44,148 @@ st.set_page_config(page_title="AP Intelligence Agent", page_icon="📒", layout=
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
+/* ===========================================================================
+   Dark-glow restyle -- design suggestions/validate-payment-advice-build-
+   prompt.md + AP Agent Dark Glow Mockup.html. Visual/CSS layer only: no
+   change to webhook calls, computed values, or which fields exist.
+   Tokens match the approved mockup's palette exactly. --muted is #96969f
+   specifically (not darker) -- an earlier pass was flagged as too
+   low-contrast to read comfortably against #0a0a0d.
+
+   Inter is loaded via @import (not separate <link> tags before this
+   <style> block -- confirmed live that broke Streamlit's markdown
+   sanitizer, causing the whole stylesheet to render as literal page text
+   instead of being applied). */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+    --bg: #0a0a0d;
+    --panel: #131316;
+    --panel-border: #1c1c20;
+    --card: #111114;
+    --input-bg: #17171b;
+    --input-border: #26262b;
+    --text: #e8e8ea;
+    --text-hero: #f2f2f4;
+    --muted: #96969f;
+    --accent: #5b8fd9;
+    --success-bg: #10261c; --success-border: #1f4a34; --success-text: #6fbf8f;
+    --error-bg: #2a1614;   --error-border: #4a2620;   --error-text: #d97a6c;
+    --warn-bg: #241a0d;    --warn-border: #4a3416;    --warn-text: #eab876;
+    --info-bg: #10202a;    --info-border: #1f3d4e;    --info-text: #7fb8d9;
+}
+
+html, body, [data-testid="stAppViewContainer"] {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.mono, [data-testid="stMetricValue"] {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+}
+
 /* layout="wide" removes Streamlit's own max-width; re-cap it here so
    content reads as a centered column on a wide viewer instead of running
-   edge-to-edge. Widened back to 1200px (from an earlier, narrower 1000px
-   pass) at the user's direct request -- seeing it live, the narrower cap
-   read as wasting real estate rather than looking intentional. */
+   edge-to-edge. 1200px kept from an earlier live-tested decision -- Browse
+   Mock Data's tables (6 of them now) need the room a narrower cap would
+   take away. */
 [data-testid="stMainBlockContainer"] {
     max-width: 1200px;
     margin: 0 auto;
 }
 
-/* Header + tabs centered within that column -- an earlier pass left these
-   left-aligned on the reasoning that centering short text/labels usually
-   looks worse than a centered block of left-aligned content; the user saw
-   it live and still read it as too left-heavy, which overrides that
-   secondhand reasoning. [role="tablist"] is Baseweb's own ARIA attribute
-   (not a Streamlit data-testid), used here because it's the stable handle
-   on the actual flex row of tab buttons inside stTabs. */
 [data-testid="stHeading"], [data-testid="stCaptionContainer"] {
     text-align: center;
 }
+[data-testid="stCaptionContainer"] { color: var(--muted); opacity: 1; }
+
+/* Tab bar: full-contrast labels for BOTH states (mockup: only the colored
+   underline should distinguish active, not a dimmed/undimmed contrast
+   difference -- Streamlit's default already renders inactive tabs dimmed,
+   so this overrides that). Visually reordered to Browse / Ask / Validate
+   via flex `order` -- the underlying tab DOM order (and therefore which
+   tab loads by default) stays Ask / Validate / Browse; Streamlit's
+   st.tabs() has no separate "default" setting independent of list order,
+   so reordering the Python call would make Browse load first. `order` on
+   a flex child reorders the visual position only. */
 [data-testid="stTabs"] [role="tablist"] {
     justify-content: center;
+    border-bottom: 1px solid var(--panel-border);
+    gap: 4px;
+}
+[data-testid="stTabs"] [role="tab"] {
+    color: var(--text-hero) !important;
+    font-weight: 600;
+    opacity: 1 !important;
+}
+[data-testid="stTabs"] [role="tab"]:nth-child(1) { order: 2; } /* Ask a Question */
+[data-testid="stTabs"] [role="tab"]:nth-child(2) { order: 3; } /* Validate a Payment Advice */
+[data-testid="stTabs"] [role="tab"]:nth-child(3) { order: 1; } /* Browse Mock Data */
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    border-bottom-color: var(--accent) !important;
 }
 
-/* Currency/ID figures read as a ledger, not chat prose */
-[data-testid="stMetricValue"] {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-}
-
-/* Elevation against the off-white page background (see config.toml) --
-   strong enough to actually read as "raised," not just a hairline.
-   stBaseButton-secondary (the suggestion chips) is deliberately NOT in
-   this group -- see its own lighter "pill chip" rule further down;
-   confirmed via grep that every other button in this app is type="primary"
-   (styled separately by Streamlit's theme), so this selector only ever
-   matches the 4 suggestion buttons and is safe to restyle on its own. */
-[data-testid="stMetric"], [data-testid="stAlertContainer"],
-[data-testid="stExpander"], [data-testid="stTableStyledTable"] {
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05);
-    border: 1px solid #e4e7e7 !important;
-}
-[data-testid="stExpander"] {
+/* Flat panels everywhere -- the glow is reserved for actionable surfaces
+   (chat input, the Validate button) and must never appear on read-only or
+   compliance-critical content; box-shadow "elevation" (the light-theme
+   treatment) is replaced with a hairline border on a slightly-lifted flat
+   fill instead. stMetric is deliberately NOT in this group -- the mockup
+   wants the evidence-panel metrics borderless (label above value, one
+   hairline divider above the whole row -- see the explicit divider in
+   render_evidence()), not boxed cards. */
+[data-testid="stAlertContainer"],
+[data-testid="stExpander"], [data-testid="stTableStyledTable"],
+[data-testid="stForm"] {
+    background-color: var(--panel) !important;
+    border: 1px solid var(--panel-border) !important;
+    box-shadow: none !important;
     border-radius: 8px;
 }
+[data-testid="stMetric"] { background: transparent !important; border: none !important; box-shadow: none !important; padding: 0 !important; overflow: visible !important; }
+[data-testid="stMetricLabel"] { color: var(--muted) !important; font-size: 12px !important; }
+/* Streamlit's default metric-value font-size truncates with an ellipsis in
+   a 4-column row this narrow (confirmed live: "₹200,0…") -- sized down and
+   no-wrap disabled so the full rupee figure is always legible, matching
+   the mockup's smaller (~17px) metric values. */
+[data-testid="stMetricValue"] {
+    color: var(--text-hero) !important;
+    font-size: 17px !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
 
-/* Suggestion chips: light pill treatment, not a card. The earlier shared
-   card-shadow style read as "a row of form buttons," not example prompts
-   -- no shadow, rounder, thinner border, sized to content rather than
-   stretched to a fixed grid width. */
+/* Suggestion chips: lightweight -- no fill, thin border, muted text. The
+   card-shadow treatment (metrics/alerts/tables above) reads as "act here";
+   these are examples to skim, not actions, so they get the lightest
+   possible treatment in the whole system. */
 [data-testid="stBaseButton-secondary"] {
     border-radius: 999px !important;
-    border: 1px solid #d8dede !important;
+    border: 1px solid var(--panel-border) !important;
     box-shadow: none !important;
-    background-color: #fbfcfc !important;
+    background-color: transparent !important;
+    color: var(--muted) !important;
 }
 [data-testid="stBaseButton-secondary"]:hover {
-    border-color: #3d6b6f !important;
-    background-color: #eef4f4 !important;
+    border-color: var(--accent) !important;
+    color: var(--text) !important;
 }
 
-/* The chat input is the primary interaction surface for a conversational
-   agent -- it needs real visual weight: taller, an accent-tinted fill (not
-   just a border) so it unmistakably reads as "the" input rather than "an"
-   input among several controls. Pinned to the bottom of the scrollable
-   conversation area (position: sticky) so it's always reachable without
-   scrolling, the same way ChatGPT/Claude.ai/any real chat product anchors
-   its composer -- verified stMain (not the window) is the actual
-   overflow:auto container here before relying on sticky positioning
-   working at all. A small margin-top keeps it from sitting flush against
-   the last message once stuck. */
+/* Chat input: pill with a soft radial glow behind it. The mockup demotes
+   this to a plain, glow-free bar once a conversation starts -- deliberately
+   NOT replicated: st.chat_input() is called once, standalone, outside the
+   st.container(key="chat_landing") the rest of the landing state lives in,
+   so there's no clean CSS hook to condition its own styling on landing-vs-
+   chat state without a larger restructure. Kept simple: the glow stays
+   present in both states, a minor aesthetic gap from the mockup, not a
+   functional one. Sticky
+   positioning + the double-border structural fix are unchanged from the
+   light-theme version -- only colors and the glow are new. */
 [data-testid="stChatInput"] {
-    background-color: #eef4f4;
-    box-shadow: 0 2px 12px rgba(61,107,111,0.16), 0 1px 3px rgba(0,0,0,0.06);
-    border: 2px solid #3d6b6f;
-    border-radius: 12px;
+    background:
+      radial-gradient(circle at 50% 0%, color-mix(in oklab, var(--accent) 35%, transparent) 0%, color-mix(in oklab, var(--accent) 12%, transparent) 35%, transparent 70%),
+      var(--input-bg) !important;
+    border: 1px solid var(--input-border) !important;
+    border-radius: 28px;
     min-height: 60px;
     position: sticky;
     bottom: 0;
@@ -126,25 +193,22 @@ st.markdown("""
     margin-top: 12px;
 }
 [data-testid="stChatInputTextArea"] {
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     padding-top: 16px;
     padding-bottom: 16px;
-    background-color: transparent;
+    background-color: transparent !important;
+    color: var(--text) !important;
     /* Explicit cap, not just min-height on the wrapper -- older Streamlit
        versions (confirmed on 1.50.0, not present on the deployed 1.62.0)
        auto-expand this textarea to ~260px with no cap otherwise. */
     max-height: 60px !important;
 }
+[data-testid="stChatInputTextArea"]::placeholder { color: var(--muted) !important; }
 /* Double-border fix: stChatInput renders a middle, un-testid'd wrapper div
-   between the outer container above and the textarea below. That wrapper
-   carries Streamlit's OWN native 1px border plus a native :focus-within
-   rule pointing at theme.colors.primary -- which config.toml pins to the
-   identical #3d6b6f used above, so on focus (including right after Enter,
-   since Streamlit's JS refocuses the textarea on submit) both borders
-   render at once, reading as a doubled outline. No data-testid exists on
-   that div, so this targets it structurally (direct child). Verified
-   against the installed 1.50.0 bundle; re-check against the deployed
-   1.62.0 in all three states (unfocused/focused/post-Enter) once live. */
+   between the outer container above and the textarea below, carrying
+   Streamlit's own native border + :focus-within rule pointing at
+   theme.colors.primary. No data-testid exists on it, so this targets it
+   structurally (direct child). */
 [data-testid="stChatInput"] > div,
 [data-testid="stChatInput"] > div:focus-within {
     border: none !important;
@@ -152,40 +216,97 @@ st.markdown("""
     outline: none !important;
 }
 
-/* Restrained, harmonized alert palette (this app pins base="light" in
-   .streamlit/config.toml, so these are calibrated for a light background) */
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {
-    background-color: #e8f3ea; border: 1px solid #b8dcc0;
+/* Landing state (no conversation yet): vertically centered in the space
+   below the tab bar, so the glowing input is the one obvious thing to do
+   -- set only while st.session_state.messages is empty (see the Python
+   st.container(key="chat_landing") block), and harmless once a real
+   conversation exists (that container is simply never rendered again). */
+.st-key-chat_landing { min-height: 56vh; display: flex; flex-direction: column; justify-content: center; }
+
+/* Chat messages: user right-aligned as a bubble, agent left-aligned as
+   plain text -- deliberately asymmetric, not two bubbles, so the agent's
+   longer grounded answers read as the primary content and the user's
+   short questions read as prompts. No avatar icons either role. */
+[data-testid="stChatMessageAvatarUser"], [data-testid="stChatMessageAvatarAssistant"] { display: none; }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+    margin-left: auto;
+    max-width: 78%;
 }
-[data-testid="stAlertContentSuccess"] { color: #1e6b33 !important; }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    padding: 10px 16px;
+}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
+    max-width: 82%;
+}
+
+/* Restrained, harmonized alert palette for the dark ground. */
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {
+    background-color: var(--success-bg) !important; border: 1px solid var(--success-border) !important;
+}
+[data-testid="stAlertContentSuccess"] { color: var(--success-text) !important; }
 
 [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {
-    background-color: #fbeaea; border: 1px solid #eec3c3;
+    background-color: var(--error-bg) !important; border: 1px solid var(--error-border) !important;
 }
-[data-testid="stAlertContentError"] { color: #a12020 !important; }
+[data-testid="stAlertContentError"] { color: var(--error-text) !important; }
 
+/* Info = "held for review" (category conflict / tax treatment refused) --
+   deliberately calm and blue, NOT error-red or warning-amber, so a
+   genuine data conflict with no defensible resolution reads as correct,
+   confident behavior rather than a broken state. */
 [data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) {
-    background-color: #eaf1f4; border: 1px solid #c5dbe3;
+    background-color: var(--info-bg) !important; border: 1px solid var(--info-border) !important;
 }
-[data-testid="stAlertContentInfo"] { color: #2a5a70 !important; }
+[data-testid="stAlertContentInfo"] { color: var(--info-text) !important; }
 
-/* Warning = the "hold / not eligible" family -- deliberately its own color,
-   distinct from error red. A numeric mismatch (error) and a payment-
-   eligibility hold (warning) are different questions and must never be
-   visually confusable with each other -- see render_evidence() and the
-   eligibility block in the UC2 tab below. */
+/* Warning = the "not eligible to pay" / unapplied-advance family --
+   deliberately its own color, distinct from both error (numeric mismatch)
+   and info (held for review). Never visually confusable with either. */
 [data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {
-    background-color: #fbf0d9; border: 1px solid #e8c873; border-left: 4px solid #b8860b;
+    background-color: var(--warn-bg) !important; border: 1px solid var(--warn-border) !important;
+    border-left: 4px solid var(--warn-text) !important;
 }
-[data-testid="stAlertContentWarning"] { color: #7a5200 !important; font-weight: 600; }
+[data-testid="stAlertContentWarning"] { color: var(--warn-text) !important; font-weight: 600; }
 
-/* Muted secondary text instead of near-full-opacity */
-[data-testid="stCaptionContainer"] { opacity: 0.72; }
-
-/* Bordered metric cards instead of borderless floating labels */
-[data-testid="stMetric"] {
-    background-color: #f4f6f6; border: 1px solid #e0e4e4; border-radius: 6px; padding: 12px 16px;
+/* The Validate button gets the same radial-glow treatment as the chat
+   input -- the one primary action on this tab. Every other button
+   (form-submit buttons inside expanders, etc.) is left alone; grep
+   confirms this selector only ever matches type="primary" buttons, and
+   "Validate this advice" is the only one in regular use on this tab. */
+[data-testid="stBaseButton-primary"], [data-testid="stFormSubmitButton"] button {
+    background:
+      radial-gradient(circle at 50% 100%, color-mix(in oklab, var(--accent) 32%, transparent) 0%, color-mix(in oklab, var(--accent) 10%, transparent) 40%, transparent 72%),
+      var(--input-bg) !important;
+    border: 1px solid var(--input-border) !important;
+    color: var(--text-hero) !important;
+    font-weight: 600;
 }
+
+/* Comparison table (UC2 field-by-field diff): fixed column widths so
+   Submitted/Correct/Match don't stretch full-bleed with large dead gaps,
+   and those three columns center-aligned against their (also centered)
+   headers -- the mismatch between a left-aligned header and a right-
+   aligned value column was a real readability bug caught while building
+   this mockup. st.table (not st.dataframe) renders real HTML, so this is
+   reachable via CSS at all. */
+[data-testid="stTable"] table { table-layout: fixed; max-width: 640px; }
+[data-testid="stTable"] th:not(:first-child), [data-testid="stTable"] td:not(:first-child) {
+    text-align: center !important;
+}
+/* pandas Styler's .hide(axis="index") has no effect when rendered through
+   st.table() -- confirmed live, the row-number column (.row_heading) and
+   its blank corner header (.blank) still render regardless. CSS fallback
+   since the Styler-level directive doesn't reach the actual output here. */
+[data-testid="stTable"] th.row_heading, [data-testid="stTable"] th.blank {
+    display: none;
+}
+
+/* Browse Mock Data: st.dataframe already provides its own scroll/sticky-
+   header behavior -- only the palette needs to follow the theme here. */
+[data-testid="stDataFrame"] { background-color: var(--panel); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -235,19 +356,31 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
             st.dataframe(invoices, use_container_width=True, hide_index=True)
 
     elif evidence.get("tax_treatment_refused"):
-        st.warning(
-            f"**Tax treatment on hold — {evidence.get('eligibility', '')}**\n\n"
+        # A genuine, no-defensible-rule source conflict is correct, confident
+        # behavior -- not a broken state -- so this deliberately uses st.info
+        # (calm blue) rather than st.warning/st.error. It's a separate
+        # elif branch from the normal eligibility display below, so this
+        # never collides with or dilutes the "not eligible to pay" warning.
+        st.info(
+            f"**⏸ Held for review — {evidence.get('eligibility', '')}**\n\n"
             f"Pre-tax ledger position (base − advances − credits − payments): "
             f"₹{evidence.get('pre_tax_ledger_position'):,.2f}"
         )
         cc = evidence.get("category_conflict")
         if cc:
-            st.write(f"⚠️ PO says **{cc['po_category']}**, invoice says **{cc['invoice_category']}** — "
-                     f"no rule to resolve which is correct, so tax treatment is withheld pending review.")
+            st.write(f"PO says **{cc['po_category']}**, invoice says **{cc['invoice_category']}** — "
+                     f"no rule to resolve which is correct, so tax treatment is withheld pending review. "
+                     f"This is a genuine conflict in the source data that needs a human decision, not an error in the system.")
     else:
         gst = evidence.get("gst") or {}
-        c1, c2 = st.columns(2)
-        c3, c4 = st.columns(2)
+        # A single 4-column row, not two 2x2 rows -- matches the mockup's
+        # "4 metrics in one borderless row" layout. The divider is an
+        # explicit element (not a CSS rule targeting the column row itself)
+        # since Streamlit gives st.columns() no stable hook to distinguish
+        # THIS row from every other st.columns() call elsewhere in the app.
+        st.markdown('<div style="border-top: 1px solid var(--panel-border); margin: 18px 0 4px;"></div>',
+                    unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Base amount", f"₹{evidence.get('base_amount', 0):,.2f}")
         c2.metric("GST", f"₹{gst.get('gst_amount', 0):,.2f}" if gst else "—")
         c3.metric("TDS withheld", f"₹{evidence.get('tds_amount', 0):,.2f}" if evidence.get("tds_amount") is not None else "—")
@@ -333,11 +466,28 @@ with tab_ask:
     # value isn't known until st.chat_input() itself is called, further
     # down. Harmless and self-correcting from the second question on.
     if not st.session_state.messages and not st.session_state.pending_question:
-        st.write("**Try one of these, or type your own question below:**")
-        cols = st.columns(len(suggestions))
-        for i, s in enumerate(suggestions):
-            cols[i].button(s, key=f"sugg_{i}", use_container_width=True,
-                            on_click=_use_suggestion, args=(s,))
+        # Vertically centers the hero+chips block in the space below the tab
+        # bar, so the glow (on the input, pinned at the bottom -- see the
+        # note on why it can't move into this same flex group) is the
+        # obvious focal point rather than one control among several stacked
+        # at the top. Harmless and never rendered again once a real
+        # conversation exists. st.container(key=...) (not two separate
+        # st.markdown('<div>')/('</div>') calls) -- confirmed live that a
+        # raw opening tag from one st.markdown call does NOT actually wrap
+        # widgets rendered by later Streamlit calls (each becomes its own
+        # sibling element), so the "wrapper" div was empty and the intended
+        # min-height just showed up as a big blank gap above the real
+        # content. st.container(key="chat_landing") emits a real DOM
+        # container Streamlit itself manages, taggable as .st-key-chat_landing.
+        with st.container(key="chat_landing"):
+            st.markdown('<p style="text-align:center; font-weight:300; font-size:32px; '
+                        'color:var(--text-hero); letter-spacing:-0.01em; margin:0 0 8px;">'
+                        'Ask about a vendor, invoice, or tax treatment</p>', unsafe_allow_html=True)
+            st.write("**Try one of these, or type your own question below:**")
+            cols = st.columns(len(suggestions))
+            for i, s in enumerate(suggestions):
+                cols[i].button(s, key=f"sugg_{i}", use_container_width=True,
+                                on_click=_use_suggestion, args=(s,))
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -818,23 +968,54 @@ with tab_validate:
                     df = pd.DataFrame(rows)
 
                     def _match_style(val):
+                        # pandas Styler renders these as inline style="..."
+                        # attributes, which beat any external stylesheet rule
+                        # on specificity alone -- confirmed live (the CSS
+                        # dark-theme pass had zero effect here until these
+                        # literal colors were fixed at the source). var()
+                        # references still resolve correctly in an inline
+                        # attribute since :root is an ancestor of the table.
                         if val == "✅":
-                            return "background-color: #e8f3ea; font-weight: 600;"
+                            return "background-color: var(--success-bg); color: var(--success-text); font-weight: 600;"
                         if val == "❌":
-                            return "background-color: #fbeaea; font-weight: 600;"
+                            return "background-color: var(--error-bg); color: var(--error-text); font-weight: 600;"
                         return ""
 
                     # st.table (not st.dataframe) deliberately -- st.dataframe
                     # renders to a <canvas> grid with no per-cell DOM, so CSS
                     # and this Styler-based formatting can't reach it at all.
-                    # st.table renders real HTML, so both work.
+                    # st.table renders real HTML, so both work. Same reasoning
+                    # applies to every property below: set explicitly here,
+                    # not left to inheritance from the page's dark palette.
                     styled = (
                         df.style
-                        .map(_match_style, subset=["Match?"])
-                        .set_properties(subset=["Submitted", "Correct"], **{
+                        .hide(axis="index")
+                        # Broad defaults FIRST, then .map()'s per-cell
+                        # background LAST -- pandas Styler concatenates
+                        # style rules in call order into one inline style="
+                        # ..." attribute, and CSS's own "last property wins"
+                        # rule then applies. Confirmed live: with .map()
+                        # before this broad set_properties(), the flat
+                        # background-color here was silently clobbering the
+                        # conditional success/error colors on every match/
+                        # mismatch cell.
+                        .set_properties(**{"background-color": "var(--panel)", "color": "var(--text)",
+                                            "border-color": "var(--panel-border)"})
+                        .set_properties(subset=["Submitted", "Correct", "Match?"], **{
                             "font-family": "ui-monospace, SFMono-Regular, monospace",
-                            "text-align": "right",
+                            # Center-aligned against a centered header, not
+                            # right-aligned against a left-aligned one -- a
+                            # real readability mismatch caught while building
+                            # this mockup.
+                            "text-align": "center",
                         })
+                        .set_table_styles([
+                            {"selector": "th", "props": "background-color: var(--card); color: var(--muted); "
+                                                          "border-color: var(--panel-border); text-align: center; "
+                                                          "font-weight: 500; font-size: 12px;"},
+                            {"selector": "th:first-child, td:first-child", "props": "text-align: left;"},
+                        ])
+                        .map(_match_style, subset=["Match?"])
                     )
                     st.table(styled)
 
@@ -854,6 +1035,20 @@ with tab_validate:
 # TAB 3 — Browse the mock data
 # ---------------------------------------------------------------------------
 
+def _section_header(title: str, source_label: str):
+    """Labels each table with which of the three sources it belongs to --
+    per the domain model, Vendors/Invoices are Source B (SAP-style Vendor &
+    Payments DB); Offices/Requisitions/Purchase Orders/Goods Receipts are
+    Source A (Procurement Portal). The reference mockup had these two
+    swapped -- corrected here to match the actual data model, not copied
+    from the mockup verbatim."""
+    st.markdown(f'<div style="display:flex; align-items:baseline; gap:10px; margin:8px 0 14px;">'
+                f'<h3 style="margin:0; font-size:20px; color:var(--text-hero);">{title}</h3>'
+                f'<span style="font-size:11px; color:var(--accent); border:1px solid '
+                f'color-mix(in oklab, var(--accent) 45%, transparent); border-radius:4px; '
+                f'padding:2px 7px;">{source_label}</span></div>', unsafe_allow_html=True)
+
+
 with tab_browse:
     st.write("Read-only view of the seeded mock data — a reviewer can see what's in the system "
              "before asking a question, without needing to inspect the source repo.")
@@ -861,14 +1056,14 @@ with tab_browse:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        st.subheader("Vendors")
+        _section_header("Vendors", "Source B · Postgres")
         cur.execute("""
             SELECT v.vendor_id, v.legal_name, v.registered_state, v.gstin, v.payment_terms, v.status
             FROM vendor_master v ORDER BY v.vendor_id;
         """)
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
 
-        st.subheader("Invoices")
+        _section_header("Invoices", "Source B · Postgres")
         cur.execute("""
             SELECT i.invoice_id, v.legal_name AS vendor, c.category_name AS category,
                    i.invoice_date, i.base_amount, i.status
@@ -879,7 +1074,7 @@ with tab_browse:
         """)
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
 
-        st.subheader("Offices")
+        _section_header("Offices", "Source A · Postgres")
         cur.execute("SELECT office_id, name, city, state FROM office ORDER BY office_id;")
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
 
@@ -891,7 +1086,7 @@ with tab_browse:
         # was undiscoverable to anyone restricted to the live app. Read-only,
         # same pattern as Vendors/Invoices/Offices above -- no new tables,
         # nothing built, only surfaced.
-        st.subheader("Requisitions")
+        _section_header("Requisitions", "Source A · Postgres")
         cur.execute("""
             SELECT r.requisition_id, o.name AS office, r.requester, r.department,
                    c.category_name AS category, r.estimated_amount, r.status, r.created_date
@@ -902,7 +1097,7 @@ with tab_browse:
         """)
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
 
-        st.subheader("Purchase Orders")
+        _section_header("Purchase Orders", "Source A · Postgres")
         cur.execute("""
             SELECT po.po_id, v.legal_name AS vendor, c.category_name AS category,
                    po.po_amount, po.issued_date, po.status
@@ -913,7 +1108,7 @@ with tab_browse:
         """)
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
 
-        st.subheader("Goods Receipts")
+        _section_header("Goods Receipts", "Source A · Postgres")
         cur.execute("SELECT receipt_id, po_id, received_date, received_amount, status FROM receipt ORDER BY receipt_id;")
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True)
 
@@ -931,7 +1126,7 @@ with tab_browse:
 
     # Source C -- read directly from the repo checkout (not Postgres), so this
     # section still renders even if the DB connection above fails.
-    st.subheader("Tax & Regulatory Documents (Source C)")
+    _section_header("Tax & Regulatory Documents", "Source C · Unstructured files")
     st.caption("All documents below are **synthetic** -- written for this assignment to "
                "read like real Indian GST/TDS circulars, not real government issuances. "
                "See tax_docs/README.md in the repo for the full rationale behind each one.")
