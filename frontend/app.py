@@ -322,6 +322,43 @@ html, body, [data-testid="stAppViewContainer"] {
     max-height: 57px !important;
 }
 [data-testid="stChatInputTextArea"]::placeholder { color: var(--muted) !important; }
+/* Cross-version layout fix: confirmed live that the DEPLOYED Streamlit
+   (1.62.0, per frontend/requirements.txt) nests stChatInput's internal
+   wrapper divs differently from the locally-installed 1.50.0 this CSS was
+   built and screenshotted against. Locally, stChatInput's one direct
+   child is already a row-direction flex box whose children (the textarea
+   and the button) sit side by side, filling the full 720px width -- so
+   the app looked correct in every local check. On 1.62.0, that structure
+   is a COLUMN stack instead: a narrow (~227px), non-stretched wrapper
+   containing a second narrow wrapper, which itself stacks a "text row"
+   ABOVE a "button row" -- a newer chat-input design (textarea on top,
+   toolbar below), not the single-row pill this app's design calls for.
+   Confirmed via direct DOM/computed-style inspection on the live site:
+   this produced exactly the reported symptom (placeholder text wrapping
+   to 2 lines, send icon rendering below-center instead of at the right
+   edge). Targeting by fixed nesting depth would fix one version and risk
+   breaking the other (1.50.0's 3 depth-2 siblings -- text wrapper,
+   instructions div, button wrapper -- would each get forced to the same
+   width, breaking their side-by-side sizing). Instead, select by
+   STRUCTURAL ROLE via :has(), which is version-agnostic: "any wrapper
+   div that contains both the textarea and the button somewhere inside it"
+   is forced into a full-width row (this matches at whichever depth that
+   split actually occurs -- one level on 1.50.0, harmlessly re-asserting
+   what's already true there; two levels on 1.62.0, actually fixing it);
+   "any wrapper that contains the textarea but NOT the button" is given
+   flex-grow so it claims the row's remaining width instead of only its
+   own intrinsic content width, letting the already-width:100% textarea
+   inside it actually stretch. */
+[data-testid="stChatInput"] div:has([data-testid="stChatInputTextArea"]):has([data-testid="stChatInputSubmitButton"]) {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    width: 100% !important;
+}
+[data-testid="stChatInput"] div:has([data-testid="stChatInputTextArea"]):not(:has([data-testid="stChatInputSubmitButton"])) {
+    flex: 1 1 auto !important;
+    width: auto !important;
+}
 /* Double-border fix (+ glow-visibility fix, found the same way): stChatInput
    nests THREE levels of un-testid'd wrapper divs before reaching the
    textarea (confirmed live by walking the full DOM tree) -- not just one
