@@ -350,5 +350,40 @@
       },
       "why": "The exact scenario the user hit live: an accountant drafts an advice using a rate that isn't Furniture's actual current one (12% instead of 18%) for an invoice that isn't in the system yet. Must be caught as a rate error via the category-only check, not silently accepted (the pre-fix behavior was a dead-end 'invoice not found', unable to check anything at all)."
     }
+  ],
+  "comparison_cases": [
+    {
+      "id": "C1-skyline-tax-rate-change",
+      "question": "What tax applies to Skyline Software Labs invoice 13, and does it differ from invoice 14?",
+      "vendor": "Skyline Software Labs",
+      "invoice_ids": [13, 14],
+      "expected": {
+        "comparison": true,
+        "invoices": [
+          {
+            "invoice_id": 13, "base_amount": 100000.0,
+            "gst_rate_pct": 18.0, "gst_amount": 18000.0, "cgst": 9000.0, "sgst": 9000.0,
+            "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 10000.0,
+            "gross_liability": 118000.0, "net_disbursement_due": 108000.0, "payment_eligibility": "eligible"
+          },
+          {
+            "invoice_id": 14, "base_amount": 100000.0,
+            "gst_rate_pct": 12.0, "gst_amount": 12000.0, "cgst": 6000.0, "sgst": 6000.0,
+            "tds_rate_pct": 10.0, "tds_section": "194J", "tds_amount": 10000.0,
+            "gross_liability": 112000.0, "net_disbursement_due": 102000.0, "payment_eligibility": "eligible"
+          }
+        ],
+        "rates_differ": true
+      },
+      "why": "Both invoices are Software (SAC 998313) for the same vendor, same base amount, same PO/receipt (exact 3-way match), same TDS (10%, Section 194J -- TDS is not date-dependent per db/seed.py tds_rate_for()). But INV-13 (2025-09-01) predates the 22-Sep-2025 GST reform and INV-14 (2025-10-01) is after it, so GST differs: 18% vs 12% (db/seed.py GST_RATES['Software']). This is the exact reported bug -- previously only invoice 13 was silently answered with no acknowledgment invoice 14 was ever asked about; the fix must return both invoices' figures and state that GST (not TDS) is what differs, and why."
+    },
+    {
+      "id": "C2-comparison-one-invoice-missing",
+      "question": "Compare Skyline Software Labs invoice 13 and invoice 9999.",
+      "vendor": "Skyline Software Labs",
+      "invoice_ids": [13, 9999],
+      "expected": {"error": "comparison_incomplete", "missing_contains": "9999"},
+      "why": "9999 does not exist for this vendor -- must not silently compare invoice 13 against nothing, or crash; must explicitly say which invoice couldn't be found (reuses the existing {error, message} response shape already used by Respond Not Found / Respond Vendor Ambiguous)."
+    }
   ]
 }

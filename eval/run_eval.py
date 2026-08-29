@@ -190,6 +190,70 @@ def check_vendor_lookup(case):
     return (len(problems) == 0), ("; ".join(problems) if problems else "OK") + note
 
 
+def check_comparison(case):
+    """A single question naming 2 invoices for the same vendor. Asserts
+    against the {comparison: true, invoices: [...]} shape from the new
+    comparison branch -- structurally different again from every other
+    response shape, so this checks per-invoice fields by invoice_id rather
+    than assuming array order matches the question's order."""
+    try:
+        resp = requests.post(f"{N8N_BASE}/webhook/uc1-ask", json={"question": case["question"]}, timeout=90)
+        data = resp.json()
+    except Exception as e:
+        return False, f"request failed: {e}"
+
+    exp = case["expected"]
+    problems = []
+
+    if "error" in exp:
+        if data.get("error") != exp["error"]:
+            problems.append(f"expected error={exp['error']!r}, got {data.get('error')!r}")
+        msg = data.get("message", "")
+        if exp.get("missing_contains") and exp["missing_contains"] not in msg:
+            problems.append(f"expected message to mention {exp['missing_contains']!r}, got {msg!r}")
+        return (len(problems) == 0), ("; ".join(problems) if problems else "OK")
+
+    if not data.get("comparison"):
+        return False, f"expected a comparison response (comparison=true), got keys={list(data.keys())}"
+
+    by_id = {inv.get("invoice_id"): inv for inv in (data.get("invoices") or [])}
+    rates = []
+    for exp_inv in exp.get("invoices", []):
+        iid = exp_inv["invoice_id"]
+        inv = by_id.get(iid)
+        if inv is None:
+            problems.append(f"invoice {iid}: missing from response entirely")
+            continue
+        ev = inv.get("evidence", {})
+        gst = ev.get("gst") or {}
+        tax_ev = inv.get("tax_evidence", {})
+        rates.append(tax_ev.get("gst", {}).get("rate_pct"))
+        checks = [
+            ("base_amount", ev.get("base_amount"), exp_inv.get("base_amount")),
+            ("gst_amount", gst.get("gst_amount"), exp_inv.get("gst_amount")),
+            ("cgst", gst.get("cgst"), exp_inv.get("cgst")),
+            ("sgst", gst.get("sgst"), exp_inv.get("sgst")),
+            ("tds_amount", ev.get("tds_amount"), exp_inv.get("tds_amount")),
+            ("gross_liability", ev.get("gross_liability"), exp_inv.get("gross_liability")),
+            ("net_disbursement_due", ev.get("net_disbursement_due"), exp_inv.get("net_disbursement_due")),
+            ("gst_rate_pct", tax_ev.get("gst", {}).get("rate_pct"), exp_inv.get("gst_rate_pct")),
+            ("tds_rate_pct", tax_ev.get("tds", {}).get("rate_pct"), exp_inv.get("tds_rate_pct")),
+        ]
+        for field_name, actual, expected in checks:
+            if expected is None:
+                continue
+            if not close(actual, expected):
+                problems.append(f"invoice {iid} {field_name}: expected {expected}, got {actual}")
+        if exp_inv.get("payment_eligibility") and ev.get("eligibility") != exp_inv["payment_eligibility"]:
+            problems.append(f"invoice {iid} eligibility: expected {exp_inv['payment_eligibility']!r}, got {ev.get('eligibility')!r}")
+
+    if exp.get("rates_differ") and len(set(rates)) < 2:
+        problems.append(f"expected GST rates to differ between invoices, got the same rate for both: {rates}")
+
+    note = "" if data.get("guard") == "passed" else f" [info: narration fallback used, guard={data.get('guard')} -- data still verified correct]"
+    return (len(problems) == 0), ("; ".join(problems) if problems else "OK") + note
+
+
 def check_multi_turn(case):
     """Threads conversation history between calls exactly the way
     frontend/app.py does: each turn's REAL returned narrative (not a
@@ -272,6 +336,11 @@ for case in EVAL_SET.get("vendor_lookup_cases", []):
 for case in EVAL_SET.get("uc2_new_invoice_cases", []):
     ok, detail = check_uc2_new_invoice(case)
     results.append({"id": case["id"], "type": "uc2_new_invoice", "passed": ok, "detail": detail})
+    print(f"{'PASS' if ok else 'FAIL'}  {case['id']:<40} {detail}")
+
+for case in EVAL_SET.get("comparison_cases", []):
+    ok, detail = check_comparison(case)
+    results.append({"id": case["id"], "type": "comparison", "passed": ok, "detail": detail})
     print(f"{'PASS' if ok else 'FAIL'}  {case['id']:<40} {detail}")
 
 n_pass = sum(1 for r in results if r["passed"])

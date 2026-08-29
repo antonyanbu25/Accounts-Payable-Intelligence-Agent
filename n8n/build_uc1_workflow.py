@@ -27,6 +27,17 @@ FASTAPI_BASE = os.environ.get("FASTAPI_BASE_URL", "http://127.0.0.1:8123")
 
 HEADERS = {"X-N8N-API-KEY": N8N_KEY, "Content-Type": "application/json"}
 
+# additional_invoice_ids_mentioned (below) supports a 2-invoice COMPARISON
+# question in a single turn ("...invoice 13, and does it differ from
+# invoice 14?"). Deliberately does NOT support composing a comparison
+# ACROSS turns (e.g. "what about invoice 14 too?" as a follow-up) -- the
+# frontend's history payload only carries {role, content} prose, never
+# structured evidence, so Parse Intent would have to re-extract a prior
+# invoice id from noisy text rather than structured JSON, with real risk
+# of mispairing in a multi-vendor conversation. Without this, such a
+# follow-up most likely just resolves to a normal single-invoice answer
+# about the newly-named invoice alone (via the existing invoice_id_mentioned
+# carry-forward logic) -- benign, not a crash or a wrong comparison.
 PARSE_INTENT_BODY_EXPR = """={{ JSON.stringify({
   model: "claude-sonnet-4-5-20250929",
   max_tokens: 300,
@@ -39,11 +50,12 @@ PARSE_INTENT_BODY_EXPR = """={{ JSON.stringify({
       properties: {
         intent: {type: "string", enum: ["balance_lookup","tax_lookup","combined_lookup","vendor_lookup","unsupported"], description: "'vendor_lookup' is for general vendor information that ISN'T a specific balance or tax calculation -- e.g. 'what state is this vendor registered in', 'what other invoices does this vendor have', 'give me this vendor's details', 'is this vendor active or blocked'. Use 'balance_lookup'/'tax_lookup'/'combined_lookup' only when the question is actually asking to compute or state a monetary/tax figure for a specific invoice or transaction."},
         vendor_name_mentioned: {type: "string", description: "The vendor the LATEST question is about. If it names a vendor, use that name verbatim. If it instead refers back to a vendor via a pronoun or implicit reference ('them', 'that vendor', 'the same company') and exactly one vendor was discussed in the immediately preceding turn(s), use that vendor's name as it appeared earlier. If the latest question is a fresh question that doesn't reference any vendor (e.g. a category-only question, or a change of topic), leave this empty even if a different vendor was named earlier -- do not default to the last-mentioned vendor just because one exists in the history."},
-        invoice_id_mentioned: {type: ["integer","null"], description: "If the latest question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12). If it instead unambiguously refers back to a specific invoice discussed in the immediately preceding turn (e.g. 'is that invoice correctly taxed?' right after INV-17 was discussed), use that invoice's id. Do NOT carry an invoice id forward from earlier in the conversation once the topic has moved on -- if the latest question names a different vendor, or doesn't itself imply continuity with a specific invoice, use null. Never guess one."},
+        invoice_id_mentioned: {type: ["integer","null"], description: "If the latest question references a specific invoice by number (e.g. 'INV-9', 'invoice 17', 'invoice #12'), extract JUST the numeric id as an integer (e.g. 9, 17, 12) -- the FIRST/primary one mentioned, if more than one. If it instead unambiguously refers back to a specific invoice discussed in the immediately preceding turn (e.g. 'is that invoice correctly taxed?' right after INV-17 was discussed), use that invoice's id. Do NOT carry an invoice id forward from earlier in the conversation once the topic has moved on -- if the latest question names a different vendor, or doesn't itself imply continuity with a specific invoice, use null. Never guess one. If a SECOND invoice is also named for comparison ('...invoice 13, and does it differ from invoice 14?'), put that second one in additional_invoice_ids_mentioned instead, not here."},
+        additional_invoice_ids_mentioned: {type: "array", items: {type: "integer"}, description: "If the latest question asks to COMPARE the primary invoice (in invoice_id_mentioned) against one or more OTHER invoices of the SAME vendor -- e.g. 'does it differ from invoice 14', 'compare INV-9 and INV-11', 'and invoice 15 too' -- list every other invoice id mentioned here, in the order named. Empty array [] for the overwhelming majority of questions, which are about a single invoice (or no invoice at all). Do NOT populate this for a question naming two DIFFERENT vendors (comparison is only supported within one vendor), and never repeat the same id that is already in invoice_id_mentioned."},
         category_mentioned: {type: ["string","null"], enum: ["Furniture","Software","Services","Food","Appliances",null], description: "If the latest question is about a purchase category in general (no specific vendor named or resolved from history), which of these fixed categories it refers to. Null if a specific vendor was named (or resolved from history) instead, or if no category is identifiable in the latest question itself."},
         explicit_date_mentioned: {type: ["string","null"], description: "If the question states ANY date reference -- a full date ('1 September 2025' -> 2025-09-01), or just a bare year ('in 2010', 'during 2018') -> use January 1 of that year (2010-01-01, 2018-01-01). Null ONLY if no date or year is mentioned at all -- do not default to today yourself, that is handled downstream."}
       },
-      required: ["intent","vendor_name_mentioned","invoice_id_mentioned","category_mentioned","explicit_date_mentioned"]
+      required: ["intent","vendor_name_mentioned","invoice_id_mentioned","additional_invoice_ids_mentioned","category_mentioned","explicit_date_mentioned"]
     }
   }],
   tool_choice: {type:"tool", name:"parse_ap_question"},
@@ -236,6 +248,165 @@ CHECK_NARRATION_BODY_EXPR = """={{ (() => {
   });
 })() }}"""
 
+# --------------------------------------------------------------------------
+# Comparison branch: a question naming 2 invoices for the same vendor
+# ("...invoice 13, and does it differ from invoice 14?"). Genuinely new
+# architecture for this codebase -- a separate, parallel branch with its
+# OWN node instances, deliberately NOT sharing "Retrieve Facts" /
+# "Tax Lookup" / "Compute" / "Narrate" / "Check Narration" / either Respond
+# node above: if the shared Retrieve Facts sometimes emitted 2 rows, both
+# would flow into the single-invoice chain too, double-firing every
+# ordinary question and -- critically -- sending two responses through one
+# respondToWebhook node, which n8n does not support.
+# --------------------------------------------------------------------------
+
+RETRIEVE_FACTS_SQL_TEMPLATE_COMPARISON = """SELECT
+  i.invoice_id, TO_CHAR(i.invoice_date, 'YYYY-MM-DD') AS invoice_date, i.base_amount, i.gst_rate_stated, i.gst_amount_stated, i.status AS invoice_status,
+  i.po_id,
+  v.vendor_id, v.legal_name, v.registered_state, v.status AS vendor_status, v.payment_terms, v.gstin,
+  vo.submitted_state AS onboarding_state,
+  ci.category_id AS invoice_category_id, ci.category_name AS invoice_category, ci.hsn_or_sac_code AS invoice_hsn_sac,
+  po.category_id AS po_category_id, cp.category_name AS po_category,
+  po.po_amount, po.status AS po_status,
+  r.received_amount, r.status AS receipt_status,
+  o.state AS office_state,
+  COALESCE((SELECT SUM(amount) FROM advance WHERE applied_against_invoice_id = i.invoice_id), 0) AS advances_applied,
+  COALESCE((SELECT SUM(amount) FROM advance WHERE vendor_id = v.vendor_id AND applied_against_invoice_id IS NULL), 0) AS unapplied_advances,
+  COALESCE((SELECT SUM(amount) FROM credit_note WHERE invoice_id = i.invoice_id), 0) AS credits_applied,
+  COALESCE((SELECT SUM(amount) FROM payment WHERE invoice_id = i.invoice_id), 0) AS payments_made,
+  (SELECT COUNT(*) FROM invoice WHERE vendor_id = v.vendor_id AND status = 'open') AS vendor_open_invoice_count
+FROM invoice i
+JOIN vendor_master v ON i.vendor_id = v.vendor_id
+JOIN vendor_onboarding vo ON v.vendor_id = vo.vendor_id
+JOIN category ci ON i.category_id = ci.category_id
+LEFT JOIN purchase_order po ON i.po_id = po.po_id
+LEFT JOIN category cp ON po.category_id = cp.category_id
+LEFT JOIN receipt r ON r.po_id = po.po_id
+LEFT JOIN requisition req ON po.requisition_id = req.requisition_id
+LEFT JOIN office o ON req.office_id = o.office_id
+WHERE i.vendor_id = __VENDOR_ID__ AND i.invoice_id IN (__INVOICE_IDS__)
+ORDER BY i.invoice_date DESC;"""
+
+# i.invoice_id is a primary key, so IN (id1, id2) cleanly returns one row
+# per requested invoice -- no LIMIT needed. Deduped and hard-capped at 2
+# (a 3rd+ invoice named is acknowledged in the narration, not silently
+# dropped -- see NARRATE_COMPARISON_BODY_EXPR's extraIgnored below -- and
+# not supported in this first pass; every other piece of this branch is
+# already N-agnostic, so relaxing the cap later is a small change).
+RETRIEVE_FACTS_SQL_EXPR_COMPARISON = ("={{ (() => {\n"
+    "  const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input;\n"
+    "  const vendorId = $('Resolve Vendor').first().json.vendor_id;\n"
+    "  const ids = [parseInt(parsed.invoice_id_mentioned)]\n"
+    "    .concat((parsed.additional_invoice_ids_mentioned || []).map(x => parseInt(x)))\n"
+    "    .filter(n => !isNaN(n));\n"
+    "  const capped = Array.from(new Set(ids)).slice(0, 2);\n"
+    "  const idList = capped.join(',');\n"
+    "  const template = `" + RETRIEVE_FACTS_SQL_TEMPLATE_COMPARISON + "`;\n"
+    "  return template.replace('__VENDOR_ID__', vendorId).replace('__INVOICE_IDS__', idList);\n"
+    "})() }}")
+
+# Reads $json (the current fanned-out item), not .first() on a named node --
+# n8n's default per-item execution then does the fan-out with no new
+# machinery: 2 input items means this node runs twice, once per invoice.
+TAX_LOOKUP_COMPARISON_BODY_EXPR = """={{ JSON.stringify({
+  category: $json.invoice_category,
+  hsn_or_sac: $json.invoice_hsn_sac,
+  invoice_date: $json.invoice_date,
+  vendor_state: $json.registered_state,
+  office_state: $json.office_state,
+  needs_tds: true
+}) }}"""
+
+# .item (not .first()/.all()) is n8n's pairedItem-lineage idiom: "the
+# specific upstream item that, via lineage, corresponds to the item
+# currently executing at THIS node" -- what makes 2 items flowing through 2
+# sequential HTTP nodes pair correctly with no Split-In-Batches/Loop/Merge
+# node. New idiom for this codebase (.first()/.all() are the only ones used
+# elsewhere) -- verify live in the n8n editor (Test Workflow, inspect both
+# Tax Lookup Comparison/Compute Comparison output items pair to the right
+# invoice) before trusting curl results alone.
+COMPUTE_COMPARISON_BODY_EXPR = """={{ (() => {
+  const f = $('Retrieve Facts Comparison').item.json;
+  const tax = $json;
+  const conflict = f.po_category && f.invoice_category && f.po_category !== f.invoice_category;
+  const body = {
+    base_amount: Number(f.base_amount),
+    advances_applied: Number(f.advances_applied),
+    credits_applied: Number(f.credits_applied),
+    payments_made: Number(f.payments_made),
+    unapplied_advances: Number(f.unapplied_advances),
+    po_amount: f.po_amount !== null ? Number(f.po_amount) : null,
+    receipt_amount: f.received_amount !== null ? Number(f.received_amount) : null,
+    vendor_status: f.vendor_status,
+    po_status: f.po_status,
+    invoice_status: f.invoice_status
+  };
+  if (conflict) {
+    body.category_conflict_po_category = f.po_category;
+    body.category_conflict_invoice_category = f.invoice_category;
+  } else {
+    body.gst_rate_pct = tax.gst.rate_pct;
+    body.tds_rate_pct = tax.tds ? tax.tds.rate_pct : 0.0;
+    body.tds_section = tax.tds ? tax.tds.tds_section : null;
+    body.split_type = tax.split_type;
+  }
+  return JSON.stringify(body);
+})() }}"""
+
+# Neither /tax-lookup nor /compute echoes invoice_id back, so pairing across
+# the three .all() arrays below is positional -- relies on
+# settings.executionOrder: "v1" (set at the bottom of this file) for index
+# stability end to end through the two sequential per-item HTTP hops.
+# NARRATE_BODY_EXPR (single-invoice) never needs the rate itself, only the
+# rupee amounts -- but a comparison question ("does it differ") is
+# fundamentally about the RATE, so this pulls in Tax Lookup Comparison's
+# raw rate data too, same reason NARRATE_HYPOTHETICAL_BODY_EXPR does.
+NARRATE_COMPARISON_BODY_EXPR = """={{ (() => {
+  const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input;
+  const factsRows = $('Retrieve Facts Comparison').all().map(item => item.json);
+  const taxResults = $('Tax Lookup Comparison').all().map(item => item.json);
+  const computeResults = $('Compute Comparison').all().map(item => item.json);
+  const pairs = factsRows.map((f, i) => ({ facts: f, tax: taxResults[i], compute: computeResults[i] }));
+  const vendorName = pairs.length ? pairs[0].facts.legal_name : '';
+  const onboardingNote = (pairs.length && pairs[0].facts.onboarding_state !== pairs[0].facts.registered_state)
+    ? (" Onboarding state on file: " + pairs[0].facts.onboarding_state + " (vs. GSTIN-registered state used for tax: " + pairs[0].facts.registered_state + " -- mention this discrepancy briefly.)")
+    : "";
+  const extraIgnored = ((parsed.additional_invoice_ids_mentioned || []).length > 1)
+    ? (" NOTE: more than two invoices were named; only the first two (" + pairs.map(p => p.facts.invoice_id).join(' and ') + ") were compared -- say so briefly and suggest asking about the rest separately.")
+    : "";
+  return JSON.stringify({
+    model: "claude-sonnet-4-5-20250929",
+    max_tokens: 500,
+    messages: [{role:"user", content:
+      "Write a short (4-7 sentence), plain-language answer comparing " + pairs.length + " invoices for the same vendor, " + vendorName + ", using ONLY the numbers in this JSON -- never invent or alter a figure. Explicitly state whether the tax treatment (GST rate, TDS rate/section, split type) differs between the invoices and, if so, name the actual reason evidenced in the data (different category, different HSN/SAC code, a rate that changed between the two invoice dates, or a PO/invoice category conflict on one of them). If either invoice has a category_conflict or tax_treatment_refused, say so explicitly for that invoice rather than computing a false comparison for it." + onboardingNote + extraIgnored + " Per-invoice data: " + JSON.stringify(pairs.map(p => ({ invoice_id: p.facts.invoice_id, invoice_date: p.facts.invoice_date, tax_lookup: p.tax, compute_result: p.compute })))
+    }]
+  });
+})() }}"""
+
+CHECK_NARRATION_COMPARISON_BODY_EXPR = """={{ (() => {
+  const factsRows = $('Retrieve Facts Comparison').all().map(item => item.json);
+  const taxResults = $('Tax Lookup Comparison').all().map(item => item.json);
+  const computeResults = $('Compute Comparison').all().map(item => item.json);
+  const nums = [];
+  factsRows.forEach((f, i) => {
+    nums.push(Number(f.invoice_id));
+    const c = computeResults[i];
+    if (c) {
+      nums.push(c.base_amount, c.gross_liability, c.net_disbursement_due, c.tds_amount, c.pre_tax_ledger_position);
+      if (c.gst) { nums.push(c.gst.gst_amount, c.gst.cgst, c.gst.sgst, c.gst.igst); }
+    }
+    const t = taxResults[i];
+    if (t) {
+      if (t.gst && t.gst.rate_pct !== null && t.gst.rate_pct !== undefined) nums.push(t.gst.rate_pct);
+      if (t.tds && t.tds.rate_pct !== null && t.tds.rate_pct !== undefined) nums.push(t.tds.rate_pct);
+    }
+  });
+  return JSON.stringify({
+    narrative_text: $json.content[0].text,
+    structured_values: nums.filter(n => n !== null && n !== undefined)
+  });
+})() }}"""
+
 
 def http_node(name, url, body_expr, node_id, x, y, extra_headers=None):
     headers = extra_headers or []
@@ -381,6 +552,23 @@ nodes = [
         "const asked = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.vendor_name_mentioned; "
         "return JSON.stringify({ error: 'ambiguous_vendor', message: '\"' + asked + '\" matches multiple vendors on file: ' + "
         "names.join(', ') + '. Please specify which one you mean.', candidates: names }); })() }}"),
+    # RESOLVE_VENDOR_SQL's LIMIT 5 means "not ambiguous" can still mean
+    # "Resolve Vendor returned 2+ candidate rows, just with a clear score
+    # winner" (e.g. "Skyline Software Labs" also weakly matches "TechNova
+    # Software Solutions" at 0.43 -- both above the 0.4 threshold, gap 0.57
+    # so correctly not flagged ambiguous). Every node downstream has always
+    # used .first() on named-node lookups, which silently reads the same
+    # top-scoring item regardless of how many parallel per-item passes are
+    # actually running -- invisible until the comparison branch's .all()
+    # calls made 2 real duplicate passes produce visibly duplicated data
+    # (found live: "Retrieve Facts Comparison" returning 4 rows instead of
+    # 2 for an unambiguous vendor). Collapse to exactly one item here,
+    # right after ambiguity is ruled out, so this invariant -- "exactly one
+    # vendor flows through the rest of the pipeline" -- is actually
+    # enforced, not just coincidentally true wherever .first() happened to
+    # be used. Same $itemIndex idiom as "First Comparison Item?" below.
+    if_node("Vendor Resolved (First Item)?", "vendor_resolved_first_if", 750, 460,
+            "={{ $itemIndex }}", 0, "number", "equals"),
     if_node("Vendor Found?", "vendor_found_if", 780, 400,
             "={{ $json.vendor_id }}", "", "string", "notEmpty"),
     # A vendor_lookup question that ALSO names a specific invoice is
@@ -400,6 +588,18 @@ nodes = [
             "={{ (() => { const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input; "
             "return parsed.intent === 'vendor_lookup' && (parsed.invoice_id_mentioned === null || parsed.invoice_id_mentioned === undefined); })() }}",
             True, "boolean", "true"),
+
+    # Comparison only makes sense inside the balance/tax pipeline, never
+    # inside vendor_lookup (no invoice-level compute there at all) -- this
+    # gate sits on "Is Vendor Lookup?"'s FALSE output, between it and the
+    # existing single-invoice "Retrieve Facts". The .filter below handles
+    # the model echoing the same invoice into both fields (a real, single-
+    # invoice question) by degrading to the ordinary path rather than a
+    # false "incomplete comparison".
+    if_node("Is Comparison?", "is_comparison_if", 1040, 340,
+            "={{ (() => { const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input; "
+            "const extra = (parsed.additional_invoice_ids_mentioned || []).map(x => parseInt(x)).filter(id => id !== parsed.invoice_id_mentioned); "
+            "return extra.length; })() }}", 0, "number", "gt"),
 
     # ---- Branch A1: vendor was resolved AND it's a general vendor-info
     # question -- pure retrieval + narration, no tax/compute involved at all ----
@@ -428,6 +628,58 @@ nodes = [
     respond_node("Respond Fallback (templated)", "respond_fallback", 2600, 360,
         "={{ (() => { const c = $('Compute').first().json; return JSON.stringify({ narrative: 'Net disbursement due: ' + c.net_disbursement_due + ' (eligibility: ' + c.eligibility + '). [Showing the verified figures directly -- the written summary did not pass our accuracy check.]', evidence: c, tax_evidence: $('Tax Lookup').first().json, guard: 'failed_fallback_used' }); })() }}"),
 
+    # ---- Branch A3: 2-invoice comparison -- entirely separate node
+    # instances from Branch A2 above, see the comment on RETRIEVE_FACTS_SQL_TEMPLATE_COMPARISON ----
+    postgres_node("Retrieve Facts Comparison", RETRIEVE_FACTS_SQL_EXPR_COMPARISON[1:],
+                  "retrieve_facts_comparison", 1300, 420, always_output=True),
+    if_node("Comparison Rows Complete?", "comparison_rows_complete_if", 1560, 420,
+            "={{ $('Retrieve Facts Comparison').all().length }}", 2, "number", "equals"),
+    respond_node("Respond Comparison Incomplete", "respond_comparison_incomplete", 1560, 560,
+        "={{ (() => { const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input; "
+        "const requestedIds = Array.from(new Set([parsed.invoice_id_mentioned].concat(parsed.additional_invoice_ids_mentioned || []).filter(x => x !== null && x !== undefined))).slice(0, 2); "
+        "const foundIds = $('Retrieve Facts Comparison').all().map(item => item.json.invoice_id).filter(id => id !== undefined && id !== null); "
+        "const missing = requestedIds.filter(id => !foundIds.includes(id)); "
+        "return JSON.stringify({ error: 'comparison_incomplete', "
+        "message: 'Could not compare invoices ' + requestedIds.join(' and ') + ' for this vendor -- invoice(s) ' + missing.join(', ') + ' could not be found. ' + "
+        "(foundIds.length ? ('Found: invoice ' + foundIds.join(', ') + '.') : 'None of the named invoices were found.') }); "
+        "})() }}"),
+    http_node("Tax Lookup Comparison", f"{FASTAPI_BASE}/tax-lookup", TAX_LOOKUP_COMPARISON_BODY_EXPR,
+              "tax_lookup_comparison", 1820, 420),
+    http_node("Compute Comparison", f"{FASTAPI_BASE}/compute", COMPUTE_COMPARISON_BODY_EXPR,
+              "compute_comparison", 2080, 420),
+    # Compute Comparison outputs 2 items; without this, everything
+    # downstream (including the Anthropic call) would fire twice. Gate on
+    # itemIndex so only one of the two (otherwise-identical) passes
+    # continues -- the false branch (item index 1) is a deliberate dead
+    # end, not a bug: an IF node's main array needs exactly 2 entries and
+    # either may be empty.
+    if_node("First Comparison Item?", "first_comparison_item_if", 2340, 420,
+            "={{ $itemIndex }}", 0, "number", "equals"),
+    http_node("Narrate Comparison", "https://api.anthropic.com/v1/messages", NARRATE_COMPARISON_BODY_EXPR,
+              "narrate_comparison", 2600, 420, anthropic_headers),
+    http_node("Check Narration Comparison", f"{FASTAPI_BASE}/check-narration", CHECK_NARRATION_COMPARISON_BODY_EXPR,
+              "check_narration_comparison", 2860, 420),
+    if_node("Guard Passed Comparison?", "guard_if_comparison", 3120, 420, "={{ $json.passed }}", True, "boolean", "true"),
+    respond_node("Respond OK Comparison", "respond_ok_comparison", 3380, 360,
+        "={{ (() => { "
+        "const factsRows = $('Retrieve Facts Comparison').all().map(item => item.json); "
+        "const taxResults = $('Tax Lookup Comparison').all().map(item => item.json); "
+        "const computeResults = $('Compute Comparison').all().map(item => item.json); "
+        "const invoices = factsRows.map((f, i) => ({ invoice_id: f.invoice_id, invoice_date: f.invoice_date, evidence: computeResults[i], tax_evidence: taxResults[i] })); "
+        "const parsed = $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input; "
+        "const extra = (parsed.additional_invoice_ids_mentioned || []).length > 1 ? 'Only the first two invoices named were compared.' : undefined; "
+        "return JSON.stringify({ comparison: true, narrative: $('Narrate Comparison').first().json.content[0].text, invoices: invoices, guard: 'passed', note: extra }); "
+        "})() }}"),
+    respond_node("Respond Fallback Comparison", "respond_fallback_comparison", 3380, 520,
+        "={{ (() => { "
+        "const factsRows = $('Retrieve Facts Comparison').all().map(item => item.json); "
+        "const computeResults = $('Compute Comparison').all().map(item => item.json); "
+        "const taxResults = $('Tax Lookup Comparison').all().map(item => item.json); "
+        "const invoices = factsRows.map((f, i) => ({ invoice_id: f.invoice_id, invoice_date: f.invoice_date, evidence: computeResults[i], tax_evidence: taxResults[i] })); "
+        "const summary = invoices.map(inv => 'invoice ' + inv.invoice_id + ': net disbursement due ' + inv.evidence.net_disbursement_due + ' (' + inv.evidence.eligibility + ')').join('; '); "
+        "return JSON.stringify({ comparison: true, narrative: summary + ' [Showing the verified figures directly -- the written summary did not pass our accuracy check.]', invoices: invoices, guard: 'failed_fallback_used' }); "
+        "})() }}"),
+
     # ---- Branch B: no vendor resolved -> category-only or decline ----
     if_node("Category Mentioned?", "category_if", 1040, 560,
             "={{ $('Parse Intent').first().json.content.find(c => c.type === 'tool_use').input.category_mentioned }}",
@@ -454,11 +706,14 @@ connections = {
                                     [{"node": "Respond Unsupported", "type": "main", "index": 0}]]},
     "Resolve Vendor": {"main": [[{"node": "Vendor Ambiguous?", "type": "main", "index": 0}]]},
     "Vendor Ambiguous?": {"main": [[{"node": "Respond Vendor Ambiguous", "type": "main", "index": 0}],
-                                    [{"node": "Vendor Found?", "type": "main", "index": 0}]]},
+                                    [{"node": "Vendor Resolved (First Item)?", "type": "main", "index": 0}]]},
+    "Vendor Resolved (First Item)?": {"main": [[{"node": "Vendor Found?", "type": "main", "index": 0}], []]},
     "Vendor Found?": {"main": [[{"node": "Is Vendor Lookup?", "type": "main", "index": 0}],
                                 [{"node": "Category Mentioned?", "type": "main", "index": 0}]]},
     "Is Vendor Lookup?": {"main": [[{"node": "Retrieve Vendor Details", "type": "main", "index": 0}],
-                                    [{"node": "Retrieve Facts", "type": "main", "index": 0}]]},
+                                    [{"node": "Is Comparison?", "type": "main", "index": 0}]]},
+    "Is Comparison?": {"main": [[{"node": "Retrieve Facts Comparison", "type": "main", "index": 0}],
+                                 [{"node": "Retrieve Facts", "type": "main", "index": 0}]]},
 
     "Retrieve Vendor Details": {"main": [[{"node": "Narrate Vendor Details", "type": "main", "index": 0}]]},
     "Narrate Vendor Details": {"main": [[{"node": "Check Narration Vendor", "type": "main", "index": 0}]]},
@@ -473,6 +728,17 @@ connections = {
     "Check Narration": {"main": [[{"node": "Guard Passed?", "type": "main", "index": 0}]]},
     "Guard Passed?": {"main": [[{"node": "Respond OK", "type": "main", "index": 0}],
                                 [{"node": "Respond Fallback (templated)", "type": "main", "index": 0}]]},
+
+    "Retrieve Facts Comparison": {"main": [[{"node": "Comparison Rows Complete?", "type": "main", "index": 0}]]},
+    "Comparison Rows Complete?": {"main": [[{"node": "Tax Lookup Comparison", "type": "main", "index": 0}],
+                                            [{"node": "Respond Comparison Incomplete", "type": "main", "index": 0}]]},
+    "Tax Lookup Comparison": {"main": [[{"node": "Compute Comparison", "type": "main", "index": 0}]]},
+    "Compute Comparison": {"main": [[{"node": "First Comparison Item?", "type": "main", "index": 0}]]},
+    "First Comparison Item?": {"main": [[{"node": "Narrate Comparison", "type": "main", "index": 0}], []]},
+    "Narrate Comparison": {"main": [[{"node": "Check Narration Comparison", "type": "main", "index": 0}]]},
+    "Check Narration Comparison": {"main": [[{"node": "Guard Passed Comparison?", "type": "main", "index": 0}]]},
+    "Guard Passed Comparison?": {"main": [[{"node": "Respond OK Comparison", "type": "main", "index": 0}],
+                                           [{"node": "Respond Fallback Comparison", "type": "main", "index": 0}]]},
 
     "Category Mentioned?": {"main": [[{"node": "Category Tax Lookup", "type": "main", "index": 0}],
                                       [{"node": "Respond Not Found", "type": "main", "index": 0}]]},
