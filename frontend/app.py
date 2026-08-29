@@ -283,6 +283,18 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None):
         st.json(evidence)
 
 
+def render_comparison_evidence(invoices: list):
+    """Comparison response ({comparison: true, invoices: [...]}) -- side-by-
+    side columns, each rendered with the existing single-invoice
+    render_evidence() so the money-metric layout and guard-fallback styling
+    stay in exactly one place rather than being reimplemented here."""
+    cols = st.columns(len(invoices)) if invoices else []
+    for col, inv in zip(cols, invoices):
+        with col:
+            st.markdown(f"**Invoice {inv.get('invoice_id', '—')}** ({inv.get('invoice_date', '—')})")
+            render_evidence(inv.get("evidence") or {}, inv.get("tax_evidence"))
+
+
 # ---------------------------------------------------------------------------
 # TAB 1 — UC1: Ask a question
 # ---------------------------------------------------------------------------
@@ -330,7 +342,9 @@ with tab_ask:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-            if msg.get("evidence"):
+            if msg.get("comparison"):
+                render_comparison_evidence(msg.get("invoices") or [])
+            elif msg.get("evidence"):
                 render_evidence(msg["evidence"], msg.get("tax_evidence"))
 
     if st.session_state.messages:
@@ -404,6 +418,7 @@ with tab_ask:
         st.session_state.messages.append({
             "role": "assistant", "content": data.get("narrative", "(no answer returned)"),
             "evidence": data.get("evidence"), "tax_evidence": data.get("tax_evidence"),
+            "comparison": data.get("comparison", False), "invoices": data.get("invoices"),
         })
         st.rerun()
 
