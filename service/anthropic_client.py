@@ -80,9 +80,15 @@ PARSE_AP_QUESTION_TOOL = {
                     "'vendor_lookup' is for general vendor information that ISN'T a specific balance or "
                     "tax calculation -- e.g. 'what state is this vendor registered in', 'what other "
                     "invoices does this vendor have', 'give me this vendor's details', 'is this vendor "
-                    "active or blocked'. Use 'balance_lookup'/'tax_lookup'/'combined_lookup' only when "
-                    "the question is actually asking to compute or state a monetary/tax figure for a "
-                    "specific invoice or transaction."
+                    "active or blocked'. Use 'balance_lookup'/'tax_lookup'/'combined_lookup' when "
+                    "the question is asking to compute or state a monetary/tax figure for a specific "
+                    "invoice or transaction, OR for a purchase category in general (no specific vendor "
+                    "or invoice at all) -- e.g. 'what GST rate applies to Furniture purchases in "
+                    "general' is 'tax_lookup' too, use 'tax_lookup' for it, NEVER 'unsupported', even "
+                    "with prior turns about a specific vendor/invoice still in history: a fresh, "
+                    "vendor-less category-rate question is always answerable and must never be refused "
+                    "just because it doesn't name a specific invoice or transaction -- that's exactly "
+                    "what the category_mentioned field exists to capture."
                 ),
             },
             "vendor_name_mentioned": {

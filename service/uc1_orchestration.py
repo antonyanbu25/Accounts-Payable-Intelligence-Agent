@@ -52,7 +52,19 @@ def _num(v) -> str:
 
 def handle_uc1_ask(question: str, history: list = None) -> dict:
     parsed = parse_intent(question, history)
-    if parsed.get("intent") == "unsupported":
+    # Defense-in-depth, not just a prompt fix: a correctly-populated
+    # category_mentioned is a strong, narrowly-scoped signal (a fixed enum,
+    # only ever set when the model recognized a real category-level tax
+    # question) that survives even when intent classification itself
+    # wobbles under conversational pressure from unrelated prior history --
+    # observed live: identical, CORRECT vendor_name_mentioned=""/
+    # category_mentioned="Furniture" extraction, but intent flipped from
+    # "tax_lookup" (no history) to "unsupported" (with a prior
+    # specific-invoice turn in history) for the exact same question. Rather
+    # than trust intent alone here, treat a populated category_mentioned as
+    # proof the question was answerable and let it fall through to the
+    # category-only branch below regardless of what intent says.
+    if parsed.get("intent") == "unsupported" and not parsed.get("category_mentioned"):
         return UNSUPPORTED_RESPONSE
 
     vendor_name = parsed.get("vendor_name_mentioned") or ""
