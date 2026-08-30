@@ -133,6 +133,30 @@ def retrieve_invoice_facts_uc1(vendor_id: int, invoice_id: Optional[int] = None)
     return _floatify(row, _INVOICE_NUMERIC_KEYS)
 
 
+def list_open_invoices(vendor_id: int) -> list:
+    """Found by an independent recruiter-style evaluation (round 3): a
+    vendor question naming no specific invoice used to silently answer from
+    only the most recent one instead of asking which -- see the
+    ambiguous_invoice clarification in uc1_orchestration.py's
+    _handle_single_invoice(). This lists the candidates to disambiguate
+    among, same "ask, don't guess" discipline resolve_vendor() above already
+    applies to an ambiguous vendor NAME."""
+    sql = """SELECT invoice_id, TO_CHAR(invoice_date, 'YYYY-MM-DD') AS invoice_date, base_amount
+FROM invoice
+WHERE vendor_id = %(vendor_id)s AND status = 'open'
+ORDER BY invoice_date DESC;"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"vendor_id": vendor_id})
+            rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    for row in rows:
+        _floatify(row, ["base_amount"])
+    return rows
+
+
 def retrieve_invoice_facts_comparison(vendor_id: int, invoice_ids: list) -> list:
     """Port of RETRIEVE_FACTS_SQL_TEMPLATE_COMPARISON/_EXPR_COMPARISON.
     i.invoice_id is a primary key, so = ANY(ids) returns one row per

@@ -97,6 +97,77 @@ def test_ambiguous_vendor_gap_under_threshold(monkeypatch):
     assert result["candidates"] == ["Acme Furnishings Pvt Ltd", "Acme Traders Pvt Ltd"]
 
 
+def test_ambiguous_invoice_multiple_open_invoices_asks_instead_of_guessing(monkeypatch):
+    """Found by an independent recruiter-style evaluation (round 3): a
+    vendor with several open invoices and no invoice named in the question
+    used to silently answer from only the most recent one. Must now mirror
+    the ambiguous_vendor treatment above -- return a clarification, never
+    compute/narrate an answer for a specific invoice the user didn't ask
+    about."""
+    monkeypatch.setattr(uc1_orchestration, "parse_intent", lambda q, h: {
+        "intent": "balance_lookup", "vendor_name_mentioned": "TechNova Software Solutions",
+        "invoice_id_mentioned": None, "additional_invoice_ids_mentioned": [], "category_mentioned": None,
+        "explicit_date_mentioned": None,
+    })
+    monkeypatch.setattr(uc1_orchestration.db, "resolve_vendor", lambda name: [
+        {"vendor_id": 1, "legal_name": "TechNova Software Solutions Pvt Ltd", "score": 1.0},
+    ])
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_invoice_facts_uc1",
+                         lambda vid, iid: _facts(vendor_open_invoice_count=3))
+    monkeypatch.setattr(uc1_orchestration.db, "list_open_invoices", lambda vid: [
+        {"invoice_id": 17, "invoice_date": "2025-10-01", "base_amount": 110000.0},
+        {"invoice_id": 9, "invoice_date": "2025-09-01", "base_amount": 100000.0},
+        {"invoice_id": 3, "invoice_date": "2025-06-01", "base_amount": 50000.0},
+    ])
+    # No tax_lookup/do_compute/call_text mocked -- a clarification must
+    # return before any of them are reached; a stray call would raise
+    # AttributeError/TypeError here and fail the test.
+
+    result = uc1_orchestration.handle_uc1_ask("what does TechNova owe", None)
+    assert result["error"] == "ambiguous_invoice"
+    assert result["candidates"] == [
+        "INV-17 (2025-10-01, ₹110000)", "INV-9 (2025-09-01, ₹100000)", "INV-3 (2025-06-01, ₹50000)",
+    ]
+    assert "TechNova Software Solutions Pvt Ltd" in result["message"]
+
+
+def test_single_open_invoice_not_ambiguous(monkeypatch):
+    """A vendor with exactly one open invoice must still answer directly,
+    even with no invoice named -- there's nothing to disambiguate."""
+    monkeypatch.setattr(uc1_orchestration, "parse_intent", lambda q, h: {
+        "intent": "balance_lookup", "vendor_name_mentioned": "TechNova Software Solutions",
+        "invoice_id_mentioned": None, "additional_invoice_ids_mentioned": [], "category_mentioned": None,
+        "explicit_date_mentioned": None,
+    })
+    monkeypatch.setattr(uc1_orchestration.db, "resolve_vendor", lambda name: [
+        {"vendor_id": 1, "legal_name": "TechNova Software Solutions Pvt Ltd", "score": 1.0},
+    ])
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_invoice_facts_uc1",
+                         lambda vid, iid: _facts(vendor_open_invoice_count=1))
+    monkeypatch.setattr(uc1_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc1_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=100000.0, gst={"gst_amount": 18000.0, "cgst": 9000.0, "sgst": 9000.0, "igst": None, "split_type": "CGST_SGST"},
+        tds_amount=10000.0, gross_liability=118000.0, net_disbursement_due=108000.0,
+        pre_tax_ledger_position=100000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False))
+    monkeypatch.setattr(uc1_orchestration, "call_text", lambda prompt, max_tokens: "Correct.")
+    _passing_guard(monkeypatch)
+
+    result = uc1_orchestration.handle_uc1_ask("what does TechNova owe", None)
+    assert "error" not in result
+
+
+def test_aggregate_lookup_intent_distinct_from_out_of_domain_refusal(monkeypatch):
+    """Found by an independent recruiter-style evaluation (round 3): a
+    vendor-less AP question ('what do we owe right now') used to get the
+    exact same message as a genuinely off-topic one ('what's the weather'),
+    both via intent='unsupported'. Must now resolve to its own distinct
+    scope-limit response instead."""
+    monkeypatch.setattr(uc1_orchestration, "parse_intent", lambda q, h: {"intent": "aggregate_lookup"})
+    result = uc1_orchestration.handle_uc1_ask("what do we owe right now", None)
+    assert result == uc1_orchestration.AGGREGATE_UNSUPPORTED_RESPONSE
+    assert result != uc1_orchestration.UNSUPPORTED_RESPONSE
+
+
 def test_full_query_with_weak_coincidental_second_row_not_ambiguous(monkeypatch):
     """The 'Acme Traders' false-positive this codebase already debugged
     once: a legitimate 1.0 match plus a weak 0.615 coincidental second row

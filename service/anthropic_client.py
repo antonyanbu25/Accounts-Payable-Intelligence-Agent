@@ -75,7 +75,8 @@ PARSE_AP_QUESTION_TOOL = {
         "properties": {
             "intent": {
                 "type": "string",
-                "enum": ["balance_lookup", "tax_lookup", "combined_lookup", "vendor_lookup", "unsupported"],
+                "enum": ["balance_lookup", "tax_lookup", "combined_lookup", "vendor_lookup",
+                         "aggregate_lookup", "unsupported"],
                 "description": (
                     "'vendor_lookup' is for general vendor information that ISN'T a specific balance or "
                     "tax calculation -- e.g. 'what state is this vendor registered in', 'what other "
@@ -88,7 +89,12 @@ PARSE_AP_QUESTION_TOOL = {
                     "with prior turns about a specific vendor/invoice still in history: a fresh, "
                     "vendor-less category-rate question is always answerable and must never be refused "
                     "just because it doesn't name a specific invoice or transaction -- that's exactly "
-                    "what the category_mentioned field exists to capture."
+                    "what the category_mentioned field exists to capture. Use 'aggregate_lookup' for a "
+                    "genuine AP-domain balance/payment question that names NEITHER a vendor NOR a "
+                    "category -- e.g. 'what do we owe right now', 'what's outstanding overall', 'which "
+                    "vendor owes us the most'. This system only resolves one vendor at a time, so these "
+                    "are a real scope limit, but a scope limit is not the same thing as an out-of-domain "
+                    "question like the weather -- never classify these as 'unsupported'."
                 ),
             },
             "vendor_name_mentioned": {

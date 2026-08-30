@@ -42,6 +42,21 @@ UNSUPPORTED_RESPONSE = {
                 "vendor information in the accounts payable system -- it can't help with that."),
 }
 
+# Found by an independent recruiter-style evaluation (round 3): a genuine
+# AP-domain question naming no vendor at all ("what do we owe right now")
+# used to fall through to intent="unsupported" (no aggregate_lookup value
+# existed) and get this exact same generic UNSUPPORTED_RESPONSE text as a
+# truly off-topic question ("what's the weather"). Both are refused either
+# way, but a scope limit ("I only look up one vendor at a time") reads very
+# differently from an out-of-domain refusal, and conflating the two made the
+# system look less capable than it is.
+AGGREGATE_UNSUPPORTED_RESPONSE = {
+    "error": "aggregate_unsupported",
+    "message": ("I can look up one vendor at a time, not a running total across every vendor or invoice -- "
+                "which vendor did you mean? (Aggregating balances across vendors, or ranking them against "
+                "each other, isn't supported yet.)"),
+}
+
 
 def _num(v) -> str:
     """Match JS's implicit number-to-string coercion (e.g. 'claimed ' + f.claimed)."""
@@ -66,6 +81,8 @@ def handle_uc1_ask(question: str, history: list = None) -> dict:
     # category-only branch below regardless of what intent says.
     if parsed.get("intent") == "unsupported" and not parsed.get("category_mentioned"):
         return UNSUPPORTED_RESPONSE
+    if parsed.get("intent") == "aggregate_lookup":
+        return AGGREGATE_UNSUPPORTED_RESPONSE
 
     vendor_name = parsed.get("vendor_name_mentioned") or ""
     candidates = db.resolve_vendor(vendor_name) if vendor_name else []
@@ -241,15 +258,27 @@ def _handle_single_invoice(parsed: dict, vendor: dict) -> dict:
         return {"error": "not_found",
                 "message": f"Vendor '{vendor['legal_name']}' has no invoices on file to answer this question about."}
 
-    tax, computed = _tax_lookup_and_compute(facts)
+    # Found by an independent recruiter-style evaluation (round 3): a vendor
+    # with several open invoices and no invoice named in the question used
+    # to silently answer from only the most recent one -- a disclosure
+    # buried in the narration, not a decision surfaced to the user -- instead
+    # of asking which one. resolve_vendor() above already gives an ambiguous
+    # vendor NAME this exact "ask, don't guess" treatment (the ambiguous_
+    # vendor error a few lines up); this mirrors that shape for an ambiguous
+    # invoice, returning before any tax lookup/compute runs so a genuinely
+    # ambiguous question never produces a confident-looking answer for the
+    # wrong invoice.
+    if invoice_id_mentioned is None and (facts["vendor_open_invoice_count"] or 0) > 1:
+        open_invoices = db.list_open_invoices(vendor_id)
+        candidates = [f"INV-{inv['invoice_id']} ({inv['invoice_date']}, ₹{_num(inv['base_amount'])})"
+                      for inv in open_invoices]
+        return {"error": "ambiguous_invoice",
+                "message": f"{vendor['legal_name']} has {len(open_invoices)} open invoices, and no specific "
+                           f"one was named in the question: {', '.join(candidates)}. Please specify which "
+                           "invoice you mean.",
+                "candidates": candidates}
 
-    ambiguous = invoice_id_mentioned is None and (facts["vendor_open_invoice_count"] or 0) > 1
-    ambiguity_note = ""
-    if ambiguous:
-        ambiguity_note = (f" This vendor has {facts['vendor_open_invoice_count']} open invoices in total, and "
-                           "no specific invoice was named in the question -- this data covers only invoice "
-                           f"#{facts['invoice_id']} (the most recent one). You MUST say so explicitly and "
-                           "briefly, so this is never mistaken for the vendor's total balance across all invoices.")
+    tax, computed = _tax_lookup_and_compute(facts)
 
     settled = (computed.advances_applied or 0) + (computed.credits_applied or 0) + (computed.payments_made or 0)
     settled_note = ""
@@ -307,7 +336,7 @@ def _handle_single_invoice(parsed: dict, vendor: dict) -> dict:
               "ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: "
               f"{facts['legal_name']}. Onboarding state on file: {facts['onboarding_state']} (vs. "
               f"GSTIN-registered state used for tax: {facts['registered_state']} -- mention this discrepancy "
-              "briefly if they differ)." + ambiguity_note + settled_note + unapplied_note + stale_rate_note
+              "briefly if they differ)." + settled_note + unapplied_note + stale_rate_note
               + " Structured result: " + json.dumps(computed.model_dump()))
     narrative = call_text(prompt, max_tokens=400)
 
