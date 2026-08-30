@@ -22,6 +22,7 @@ from typing import Optional
 import pandas as pd
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
@@ -173,6 +174,46 @@ html, body, [data-testid="stAppViewContainer"] {
     border-bottom-color: var(--accent) !important;
 }
 
+/* Streamlit marks every already-rendered element data-stale="true" the
+   instant a script rerun starts, and dims it until the rerun finishes and
+   replaces it -- normally a sub-100ms flash, invisible in practice.
+   Confirmed live (a tight in-page poll caught every element flipping
+   staleTrue in ~270ms) that this app's chat-loading pattern keeps a rerun
+   "in progress" for however long the real LLM/DB round trip takes, so the
+   dim can sit for several seconds instead of flashing. This does not fix
+   wrong content ever showing (see the chat-message rendering notes near
+   tab_ask), only ensures nothing is invisibly dim while it's sorted out.
+
+   Scoped to .st-key-chat_conversation specifically, not a blanket
+   [data-stale="true"] override -- an earlier global version of this rule
+   had a real, separate side effect on the landing page's suggestion-chip
+   buttons (see the next comment below), so it's narrowed to only the
+   container this fix actually targets. */
+.st-key-chat_conversation [data-stale="true"] {
+    opacity: 1 !important;
+}
+
+/* Found live, while investigating the above: clicking a landing-page
+   suggestion chip can leave its own button (and its 3 siblings) VISIBLE
+   for several hundred ms after .st-key-chat_landing itself has already
+   been removed from the DOM -- not a dimming/opacity issue (their
+   computed opacity was confirmed 1 throughout), and not fixed by the rule
+   above. Walked the actual DOM ancestor chain of a lingering button
+   mid-glitch: it's not detached or floating, it is a live CHILD of
+   .st-key-chat_conversation itself. Streamlit's frontend evidently reuses
+   the same tree slot across the landing/conversation if/else branches
+   (mutually exclusive in the Python, but apparently not always identity-
+   distinct on the client) and briefly reparents the old landing buttons
+   under the new conversation container until fresh content overwrites
+   them. [class*="st-key-sugg_"] is unique to these 4 suggestion buttons
+   (st.button(..., key=f"sugg_{i}")) -- they never legitimately belong
+   inside chat_conversation in a correct render, so hiding them there is
+   safe and only ever suppresses this leftover, never a real chip shown in
+   its correct landing position. */
+.st-key-chat_conversation [class*="st-key-sugg_"] {
+    display: none !important;
+}
+
 /* Flat panels everywhere -- the glow is reserved for actionable surfaces
    (chat input, the Validate button) and must never appear on read-only or
    compliance-critical content; box-shadow "elevation" (the light-theme
@@ -311,21 +352,26 @@ html, body, [data-testid="stAppViewContainer"] {
     padding-bottom: 16px;
     background-color: transparent !important;
     color: var(--text) !important;
-    /* Explicit height, not just a max-height cap on an auto height -- the
-       textarea's native auto-resize (height:auto, browser-computed from
-       content/rows) normally lands on 57px here, but confirmed live that
-       once this specific instance sits inside the position:fixed chat-
-       state input (not the landing one, which stays in normal flow) and
-       has gone through one real type-then-clear cycle, the browser's
-       recomputed auto height drops to 40px instead of springing back to
-       57 -- no inline style involved, a pure browser reflow quirk tied to
-       the fixed positioning context. An explicit height sidesteps the
-       auto-calculation entirely so there's nothing for it to get wrong.
-       57px matches the value the auto-calc itself produces in the good
-       case, so nothing about the visual size changes -- only its
-       reliability does. */
-    height: 57px !important;
-    max-height: 57px !important;
+    /* A FLOOR, not a fixed height -- the textarea's native auto-resize
+       (height:auto, browser-computed from content/rows) normally lands on
+       57px here, but confirmed live that once this specific instance sits
+       inside the position:fixed chat-state input (not the landing one,
+       which stays in normal flow) and has gone through one real
+       type-then-clear cycle, the browser's recomputed auto height drops to
+       40px instead of springing back to 57 -- no inline style involved, a
+       pure browser reflow quirk tied to the fixed positioning context.
+       min-height sidesteps that specific collapse (never below 57px)
+       without also capping growth: an earlier version of this rule pinned
+       BOTH height and max-height to 57px, which "fixed" the collapse but
+       also permanently blocked the same native auto-resize from growing
+       for genuinely long content -- found live via a pasted multi-line
+       question rendering clipped to ~2 lines with an internal scrollbar
+       instead of growing (scrollHeight 432px vs a locked clientHeight of
+       57px). max-height here is a generous cap, not the bug's old 57px
+       ceiling -- long input scrolls internally past this, matching common
+       chat-UI convention, rather than growing without bound. */
+    min-height: 57px !important;
+    max-height: 200px !important;
 }
 [data-testid="stChatInputTextArea"]::placeholder { color: var(--muted) !important; }
 /* Cross-version layout fix: confirmed live that the DEPLOYED Streamlit
@@ -618,8 +664,44 @@ tab_ask, tab_validate, tab_browse = st.tabs(
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+@st.cache_resource
+def _get_db_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    """One small pool for the process's lifetime, not a fresh connection per
+    call -- confirmed live (3 direct timed connects against this app's real
+    DATABASE_URL) that psycopg2.connect() alone costs 0.9-2.0s here (a
+    remote Postgres TCP+TLS handshake + auth), while the query itself is
+    ~90ms -- that handshake was the actual "latency switching into Manual
+    form" complaint, still present after the show_spinner=False fix (that
+    fix only hid the ugly "Running _load_invoice_options()..." text, it
+    never touched this). @st.cache_resource is the same singleton pattern
+    service/main.py already uses for get_corpus()/get_client() -- one pool
+    survives across every rerun and every Streamlit session sharing this
+    process, so the handshake cost is paid a handful of times total, not
+    once per widget interaction.
+
+    A real pool, not a single shared connection cached the same way --
+    Streamlit can run multiple sessions concurrently in one process, and a
+    bare psycopg2 connection isn't safe for simultaneous use across
+    threads. minconn=1 keeps at least one warm connection open at all
+    times; maxconn=5 is comfortably above this app's actual concurrent
+    query need (every call site here runs one query, or a short run of
+    sequential ones, never overlapping)."""
+    return psycopg2.pool.ThreadedConnectionPool(
+        minconn=1, maxconn=5, dsn=DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor,
+    )
+
+
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    """Borrows a connection from the shared pool (see _get_db_pool) instead
+    of opening a fresh one. Callers MUST release it via
+    release_db_connection(conn) when done -- never conn.close(), which
+    would destroy the pooled connection outright instead of returning it
+    for reuse, defeating the whole point of pooling."""
+    return _get_db_pool().getconn()
+
+
+def release_db_connection(conn) -> None:
+    _get_db_pool().putconn(conn)
 
 
 def _render_json_block(data) -> None:
@@ -714,6 +796,31 @@ def render_evidence(evidence: dict, tax_evidence: Optional[dict] = None, compact
             f'</div>',
             unsafe_allow_html=True,
         )
+    elif "eligibility" not in evidence and "gst" in evidence:
+        # Category-only tax-rate lookup (_handle_category_only's
+        # TaxLookupResponse, not a ComputeResponse) -- there's no invoice or
+        # vendor behind this question, so there's no base amount, net
+        # disbursement, or payment eligibility to show. Found live: this
+        # used to fall through to the money-metric branch below, which
+        # defaulted every missing field to 0/None and rendered a fabricated
+        # "Base amount ₹0 / Net disbursement due ₹0 / Payment eligibility:
+        # None" row -- a real bug, not a placeholder. ComputeResponse always
+        # has "eligibility" (even when refused); TaxLookupResponse never
+        # does, which is what the discriminator above checks.
+        st.markdown('<div style="border-top: 1px solid var(--panel-border); margin: 18px 0 4px;"></div>',
+                    unsafe_allow_html=True)
+        gst = evidence.get("gst") or {}
+        tds = evidence.get("tds") or {}
+        c1, c2 = st.columns(2)
+        gst_val = f"{gst.get('rate_pct')}%" if gst.get("status") == "found" and gst.get("rate_pct") is not None else "—"
+        c1.metric("GST rate", gst_val)
+        if tds and tds.get("status") == "found" and tds.get("rate_pct") is not None:
+            tds_val = f"{tds.get('rate_pct')}%" + (f" ({tds.get('tds_section')})" if tds.get("tds_section") else "")
+        else:
+            tds_val = "—"
+        c2.metric("TDS rate", tds_val)
+        st.caption("Category-level rate lookup — not tied to a specific vendor, invoice, or transaction, so no "
+                   "base amount, GST/TDS split, or payment eligibility applies here.")
     else:
         gst = evidence.get("gst") or {}
         # A single 4-column row, not two 2x2 rows -- matches the mockup's
@@ -810,6 +917,134 @@ def render_comparison_evidence(invoices: list):
         with col:
             st.markdown(f"**Invoice {inv.get('invoice_id', '—')}** ({inv.get('invoice_date', '—')})")
             render_evidence(inv.get("evidence") or {}, inv.get("tax_evidence"), compact=True)
+
+
+@st.fragment(run_every=0.9)
+def _render_pending_uc1_answer(question_text: str, history: list):
+    """Renders the live "awaiting" turn for a just-submitted UC1 question --
+    the loading captions, then the real narrative + evidence once it
+    arrives. @st.fragment-isolated (not just a plain function called inline)
+    specifically to fix a real bug found live: the OLD version ran the
+    entire caption-cycling loop (time.sleep(0.9) + repeated st.empty()
+    updates) as part of the SAME single script execution that had just
+    inserted this turn's new chat_message elements into the page. Streamlit
+    marks every already-rendered element data-stale="true" for the duration
+    of an in-progress script run and dims it -- normally invisible (a
+    sub-100ms flash), but here the run stayed "in progress" for however
+    long the real LLM/DB round trip took (several seconds, sometimes 10+).
+    Confirmed live via raw element.innerText inspection that during that
+    window, a NEW question's own chat_message could contain the FULL text
+    of the PRECEDING assistant turn appended after it -- a genuine content
+    bug, not just cosmetic dimming, self-correcting only once the real
+    answer replaced it. A fragment's own reruns are isolated from the
+    surrounding tree's reconciliation, so the outer script that inserts this
+    turn's elements can finish and settle quickly, and only THIS fragment's
+    own small container keeps re-running while the real call is outstanding.
+
+    run_every=0.9 (matching the original caption cadence), not a manual
+    st.rerun(scope="fragment") loop -- confirmed live that Streamlit
+    disallows scope="fragment" reruns during a full (non-fragment) script
+    run, which the very first invocation of any fragment always is;
+    run_every is Streamlit's own intended mechanism for "poll a background
+    task on a timer" and needs no self-triggered rerun call at all.
+
+    The st.chat_message wrapper lives INSIDE this fragment (not around the
+    call site in the caller) deliberately -- Streamlit only clears and
+    redraws a fragment's own elements between reruns when they're created
+    directly inside it; elements written into an externally-created
+    container instead ACCUMULATE across fragment reruns until the next full
+    app rerun, which would have stacked a new caption paragraph on every
+    tick instead of replacing the last one.
+
+    _uc1_done guards against runaway resubmission: once finished, this
+    fragment keeps receiving run_every ticks (Streamlit does not
+    necessarily tear the timer down the instant this call site stops being
+    invoked), and without this flag each tick would see no _uc1_future in
+    session_state and kick off a brand new duplicate request. The caller is
+    responsible for clearing _uc1_done (and any leftover future/executor/
+    caption state) exactly once, when a genuinely NEW question becomes
+    pending -- see the awaiting block above.
+
+    Once done, every subsequent tick still RE-RENDERS the same final
+    content from _uc1_result rather than returning with nothing -- found
+    live that this is necessary, not just harmless: a fragment clears and
+    replaces its own previously-rendered elements on every tick it runs,
+    including this one, so an early return here with no output wiped the
+    completed answer off the screen on the very next run_every tick after
+    it finished."""
+    with st.chat_message("assistant"):
+        if st.session_state.get("_uc1_done"):
+            data = st.session_state._uc1_result
+            st.write(data.get("narrative", "(no answer returned)"))
+            if data.get("comparison"):
+                render_comparison_evidence(data.get("invoices") or [])
+            elif data.get("evidence"):
+                render_evidence(data["evidence"], data.get("tax_evidence"))
+            return
+
+        if "_uc1_future" not in st.session_state:
+            # First tick for this pending question -- kick off the real call
+            # on a background thread so every tick (including this one) can
+            # keep cycling captions without blocking on the network call.
+            ex = ThreadPoolExecutor(max_workers=1)
+            st.session_state._uc1_executor = ex
+            st.session_state._uc1_future = ex.submit(
+                requests.post, f"{ORCHESTRATOR_BASE}/webhook/uc1-ask",
+                json={"question": question_text, "history": history}, timeout=90,
+            )
+            st.session_state._uc1_caption_idx = 0
+
+        future = st.session_state._uc1_future
+        if not future.done():
+            # Named to read like a multi-source lookup (matches the real
+            # architecture: Source A/PO, Source B/vendor, Source C/tax
+            # docs) -- NOT individually synced to real backend checkpoints,
+            # since /webhook/uc1-ask still returns one atomic response with
+            # no intermediate progress signal. Holds on the last caption if
+            # the real call runs past all three.
+            captions = [
+                "🔍 Pulling vendor details…",
+                "🔗 Mapping against the purchase order…",
+                "📄 Checking tax implications…",
+            ]
+            idx = st.session_state._uc1_caption_idx
+            st.markdown(
+                f'<p class="loading-caption">{captions[min(idx, len(captions) - 1)]}</p>',
+                unsafe_allow_html=True,
+            )
+            st.session_state._uc1_caption_idx = idx + 1
+            return  # run_every fires the next tick; nothing more to do now
+
+        try:
+            resp = future.result()  # re-raises any request exception here
+            data = resp.json()
+            if "narrative" not in data and data.get("message"):
+                # Graceful-refusal paths (nonexistent vendor, out-of-domain
+                # question) return {error, message}, not {narrative,
+                # evidence} -- surface that message directly instead of
+                # falling through to a blank "(no answer returned)".
+                data = {"narrative": data["message"], "evidence": {}}
+        except Exception as e:
+            data = {"narrative": f"Something went wrong reaching the agent: {e}", "evidence": {}}
+        finally:
+            st.session_state._uc1_executor.shutdown(wait=False)
+            del st.session_state._uc1_executor
+            del st.session_state._uc1_future
+            del st.session_state._uc1_caption_idx
+
+        st.session_state._uc1_result = data
+        st.session_state._uc1_done = True
+        st.write(data.get("narrative", "(no answer returned)"))
+        if data.get("comparison"):
+            render_comparison_evidence(data.get("invoices") or [])
+        elif data.get("evidence"):
+            render_evidence(data["evidence"], data.get("tax_evidence"))
+
+        st.session_state.messages.append({
+            "role": "assistant", "content": data.get("narrative", "(no answer returned)"),
+            "evidence": data.get("evidence"), "tax_evidence": data.get("tax_evidence"),
+            "comparison": data.get("comparison", False), "invoices": data.get("invoices"),
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -940,69 +1175,27 @@ with tab_ask:
                 """, height=0)
 
                 question_text = st.session_state.messages[-1]["content"]
-                with st.chat_message("assistant"):
-                    status_ph = st.empty()
-                    # Named to read like a multi-source lookup (matches the
-                    # real architecture: Source A/PO, Source B/vendor, Source
-                    # C/tax docs) -- NOT individually synced to real backend
-                    # checkpoints, since /webhook/uc1-ask still returns one
-                    # atomic response with no intermediate progress signal.
-                    # The real POST runs in a background thread starting
-                    # immediately below, so this adds zero artificial delay:
-                    # captions just narrate whatever time the real call
-                    # actually takes, holding on the last caption if it runs
-                    # past all three.
-                    captions = [
-                        "🔍 Pulling vendor details…",
-                        "🔗 Mapping against the purchase order…",
-                        "📄 Checking tax implications…",
-                    ]
-                    try:
-                        # Prior turns only -- exclude the question just
-                        # appended above. role/content ONLY, never the
-                        # evidence/tax_evidence JSON blobs: the narrative
-                        # prose already states prior figures in plain
-                        # language, and sending the raw structured evidence
-                        # would balloon token cost for no resolution benefit.
-                        prior_turns = st.session_state.messages[:-1]
-                        history = [{"role": m["role"], "content": m["content"]}
-                                   for m in prior_turns[-(HISTORY_TURNS * 2):]]
-                        with ThreadPoolExecutor(max_workers=1) as ex:
-                            future = ex.submit(
-                                requests.post, f"{ORCHESTRATOR_BASE}/webhook/uc1-ask",
-                                json={"question": question_text, "history": history}, timeout=90,
-                            )
-                            i = 0
-                            while not future.done():
-                                status_ph.markdown(
-                                    f'<p class="loading-caption">{captions[min(i, len(captions) - 1)]}</p>',
-                                    unsafe_allow_html=True,
-                                )
-                                i += 1
-                                time.sleep(0.9)
-                            resp = future.result()  # re-raises any request exception here, on the main thread
-                        data = resp.json()
-                        if "narrative" not in data and data.get("message"):
-                            # Graceful-refusal paths (nonexistent vendor,
-                            # out-of-domain question) return {error,
-                            # message}, not {narrative, evidence} -- surface
-                            # that message directly instead of falling
-                            # through to a blank "(no answer returned)".
-                            data = {"narrative": data["message"], "evidence": {}}
-                    except Exception as e:
-                        data = {"narrative": f"Something went wrong reaching the agent: {e}", "evidence": {}}
-                    status_ph.empty()
-                    st.write(data.get("narrative", "(no answer returned)"))
-                    if data.get("comparison"):
-                        render_comparison_evidence(data.get("invoices") or [])
-                    elif data.get("evidence"):
-                        render_evidence(data["evidence"], data.get("tax_evidence"))
-
-                st.session_state.messages.append({
-                    "role": "assistant", "content": data.get("narrative", "(no answer returned)"),
-                    "evidence": data.get("evidence"), "tax_evidence": data.get("tax_evidence"),
-                    "comparison": data.get("comparison", False), "invoices": data.get("invoices"),
-                })
+                # Prior turns only -- exclude the question just appended
+                # above. role/content ONLY, never the evidence/tax_evidence
+                # JSON blobs: the narrative prose already states prior
+                # figures in plain language, and sending the raw structured
+                # evidence would balloon token cost for no resolution benefit.
+                prior_turns = st.session_state.messages[:-1]
+                history = [{"role": m["role"], "content": m["content"]}
+                           for m in prior_turns[-(HISTORY_TURNS * 2):]]
+                # A genuinely NEW pending question -- clear any leftover
+                # future/executor/caption-index/done state a PRIOR turn's
+                # fragment ticks may have left behind, so this turn starts
+                # clean rather than short-circuiting on _uc1_done=True from
+                # the last answer or resuming someone else's future.
+                if st.session_state.get("_uc1_pending_for") != question_text:
+                    st.session_state.pop("_uc1_future", None)
+                    st.session_state.pop("_uc1_executor", None)
+                    st.session_state.pop("_uc1_caption_idx", None)
+                    st.session_state.pop("_uc1_result", None)
+                    st.session_state._uc1_pending_for = question_text
+                    st.session_state._uc1_done = False
+                _render_pending_uc1_answer(question_text, history)
 
         if st.session_state.messages:
             # Auto-scroll on every rerun -- the sticky input only stays
@@ -1091,7 +1284,7 @@ _ADVICE_NUMERIC_FIELDS = ("base_amount", "gst_rate_pct", "gst_cgst", "gst_sgst",
 CATEGORY_OPTIONS = ["Furniture", "Software", "Services", "Food", "Appliances"]
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, show_spinner=False)
 def _load_invoice_options():
     """Real invoices, for the Manual Form's invoice picker -- so validating
     an existing invoice never requires knowing or typing an ID up front, or
@@ -1106,22 +1299,36 @@ def _load_invoice_options():
     office_state comes back NULL for that one row and the split can't be
     auto-detected for it; the Manual Form falls back to asking directly
     only in that case. Cached briefly since this is read-only reference
-    data re-queried on every widget interaction otherwise."""
+    data re-queried on every widget interaction otherwise.
+
+    show_spinner=False -- found live: the call site below already wraps
+    this in its own st.spinner("Loading invoice list..."), but
+    st.cache_data's default spinner fires independently on every cache
+    miss, stacking a raw "Running _load_invoice_options()..." line right
+    under that friendly message. The outer spinner already covers user
+    feedback; this one was pure internal-function-name noise."""
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT i.invoice_id, v.legal_name AS vendor, c.category_name AS category,
-               i.base_amount, i.status, v.registered_state, o.state AS office_state
-        FROM invoice i
-        JOIN vendor_master v ON i.vendor_id = v.vendor_id
-        JOIN category c ON i.category_id = c.category_id
-        LEFT JOIN purchase_order po ON i.po_id = po.po_id
-        LEFT JOIN requisition req ON po.requisition_id = req.requisition_id
-        LEFT JOIN office o ON req.office_id = o.office_id
-        ORDER BY i.invoice_id;
-    """)
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT i.invoice_id, v.legal_name AS vendor, c.category_name AS category,
+                   i.base_amount, i.status, v.registered_state, o.state AS office_state
+            FROM invoice i
+            JOIN vendor_master v ON i.vendor_id = v.vendor_id
+            JOIN category c ON i.category_id = c.category_id
+            LEFT JOIN purchase_order po ON i.po_id = po.po_id
+            LEFT JOIN requisition req ON po.requisition_id = req.requisition_id
+            LEFT JOIN office o ON req.office_id = o.office_id
+            ORDER BY i.invoice_id;
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        # Always release back to the pool, even on a query error -- a bare
+        # conn.close() here would still work (psycopg2 tolerates closing a
+        # pooled connection), but it removes that connection from the pool
+        # permanently instead of returning it for reuse, quietly eroding
+        # the pool back toward one-connection-per-call over time.
+        release_db_connection(conn)
     return rows
 
 
@@ -1955,6 +2162,7 @@ with tab_browse:
         'advice.</div>',
         unsafe_allow_html=True,
     )
+    conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -2053,8 +2261,6 @@ with tab_browse:
         _section_header("Goods Receipts", "Source A · Postgres")
         cur.execute("SELECT receipt_id, po_id, received_date, received_amount, status FROM receipt ORDER BY receipt_id;")
         st.dataframe([dict(r) for r in cur.fetchall()], use_container_width=True, hide_index=True, height=260)
-
-        conn.close()
     except Exception as e:
         # Never interpolate the raw exception into a user-facing message --
         # a driver-level connection error (e.g. "invalid dsn") echoes back
@@ -2065,6 +2271,13 @@ with tab_browse:
         st.error("Could not reach the database. This is a configuration issue on the "
                  "backend, not something on your end -- the mock-data browser is "
                  "temporarily unavailable.")
+    finally:
+        # Release back to the pool even if a query above raised -- guards
+        # against a leaked-forever pooled connection on the error path,
+        # which the old bare conn.close() (only reached on the success
+        # path, right before `except`) never covered.
+        if conn is not None:
+            release_db_connection(conn)
 
     # Source C -- read directly from the repo checkout (not Postgres), so this
     # section still renders even if the DB connection above fails.
