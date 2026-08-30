@@ -15,6 +15,8 @@ import io
 import json
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import pandas as pd
@@ -426,17 +428,6 @@ html, body, [data-testid="stAppViewContainer"] {
     padding-top: 32px;
     padding-bottom: 150px;
 }
-/* Loading row (the "Looking this up..." spinner): same 700px column, and
-   its own bottom clearance for the same reason as chat_conversation above
-   -- it renders as a SEPARATE, later element (after chat_input in script
-   order, since chat_input is fixed/out-of-flow and doesn't push it down),
-   so it doesn't inherit chat_conversation's own padding automatically. */
-.st-key-loading_row {
-    max-width: 700px;
-    margin: 0 auto;
-    padding-bottom: 150px;
-}
-
 /* Chat messages: user right-aligned as a bubble, agent left-aligned as
    plain text -- deliberately asymmetric, not two bubbles, so the agent's
    longer grounded answers read as the primary content and the user's
@@ -561,6 +552,29 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 .example-json .k { color: var(--info-text); }
 .example-json .v { color: var(--text-hero); }
+
+/* Step-by-step calculation walkthrough (UC2 "Validate a Payment Advice")
+   -- each row is a label + a formula string built ENTIRELY from numbers
+   the backend already computed (see render_step_by_step_calculation() in
+   Python); the frontend never performs arithmetic of its own here, only
+   formats/labels already-known figures. Deliberately reuses the same quiet
+   --panel-border row-divider rhythm as the diff table below it rather than
+   a boxed-card look -- this lives inside an st.expander(), same visual
+   weight as its other supplementary content. */
+.calc-steps { margin: 4px 0 8px; }
+.calc-step { padding: 10px 0; border-bottom: 1px solid var(--panel-border); }
+.calc-step:last-child { border-bottom: none; }
+.calc-step-label { color: var(--muted); font-size: 12px; font-weight: 500; margin-bottom: 3px; }
+.calc-step-formula { color: var(--text-hero); font-size: 14px; line-height: 1.6; }
+/* <em> here marks a short inline tax-document citation (source filename),
+   not real emphasis -- colored like .example-json's .k spans so a
+   "citation" reads consistently as info-blue everywhere in the app. */
+.calc-step-formula em { color: var(--info-text); font-style: normal; }
+.calc-step-note { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin-top: 4px; }
+
+/* Staged loading captions in the "Ask a Question" live assistant turn --
+   muted, matches the tone of other supplementary/status text in the app. */
+.loading-caption { color: var(--muted); font-size: 14px; margin: 0; }
 
 /* UC2 match/mismatch verdict: plain inline colored text, no box -- distinct
    from the boxed alert language used everywhere else in the app, and from
@@ -890,6 +904,106 @@ with tab_ask:
                     elif msg.get("evidence"):
                         render_evidence(msg["evidence"], msg.get("tax_evidence"))
 
+            # A lone trailing user message with no paired assistant reply
+            # means a question was just submitted (Phase A below appends it
+            # and reruns immediately, before ever doing the real work) and
+            # is still awaiting an answer -- render that answer live, right
+            # here, still inside chat_conversation: the one DOM position
+            # that's actually above the sticky chat_input (chat_input has to
+            # stay last in DOM order -- see the comment above show_landing --
+            # so nothing that depends on "was a question just submitted" can
+            # render above it within the SAME pass a question is typed; this
+            # is why the append happens on its own fast pass first). This
+            # replaces the old "process silently, append both turns, rerun"
+            # pattern, which left the just-typed question invisible and a
+            # detached spinner rendering behind the pinned input bar.
+            awaiting = bool(st.session_state.messages) and st.session_state.messages[-1]["role"] == "user"
+            if awaiting:
+                # Scroll to the new question now, before the live turn below
+                # (which can take several seconds) even starts -- otherwise
+                # the viewport sits wherever the previous turn left it while
+                # the loading captions cycle. Anchor = the literal LAST
+                # message here (not 2nd-to-last, unlike the final scroll
+                # below): at this exact point the new question genuinely IS
+                # the last message, since its assistant reply doesn't exist
+                # yet.
+                components.html(f"""
+                    <script>
+                    setTimeout(function() {{
+                        const messages = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+                        if (messages.length) {{
+                            messages[messages.length - 1].scrollIntoView({{block: 'start', behavior: 'auto'}});
+                        }}
+                    }}, 60);
+                    </script>
+                    <!-- {len(st.session_state.messages)} -->
+                """, height=0)
+
+                question_text = st.session_state.messages[-1]["content"]
+                with st.chat_message("assistant"):
+                    status_ph = st.empty()
+                    # Named to read like a multi-source lookup (matches the
+                    # real architecture: Source A/PO, Source B/vendor, Source
+                    # C/tax docs) -- NOT individually synced to real backend
+                    # checkpoints, since /webhook/uc1-ask still returns one
+                    # atomic response with no intermediate progress signal.
+                    # The real POST runs in a background thread starting
+                    # immediately below, so this adds zero artificial delay:
+                    # captions just narrate whatever time the real call
+                    # actually takes, holding on the last caption if it runs
+                    # past all three.
+                    captions = [
+                        "🔍 Pulling vendor details…",
+                        "🔗 Mapping against the purchase order…",
+                        "📄 Checking tax implications…",
+                    ]
+                    try:
+                        # Prior turns only -- exclude the question just
+                        # appended above. role/content ONLY, never the
+                        # evidence/tax_evidence JSON blobs: the narrative
+                        # prose already states prior figures in plain
+                        # language, and sending the raw structured evidence
+                        # would balloon token cost for no resolution benefit.
+                        prior_turns = st.session_state.messages[:-1]
+                        history = [{"role": m["role"], "content": m["content"]}
+                                   for m in prior_turns[-(HISTORY_TURNS * 2):]]
+                        with ThreadPoolExecutor(max_workers=1) as ex:
+                            future = ex.submit(
+                                requests.post, f"{ORCHESTRATOR_BASE}/webhook/uc1-ask",
+                                json={"question": question_text, "history": history}, timeout=90,
+                            )
+                            i = 0
+                            while not future.done():
+                                status_ph.markdown(
+                                    f'<p class="loading-caption">{captions[min(i, len(captions) - 1)]}</p>',
+                                    unsafe_allow_html=True,
+                                )
+                                i += 1
+                                time.sleep(0.9)
+                            resp = future.result()  # re-raises any request exception here, on the main thread
+                        data = resp.json()
+                        if "narrative" not in data and data.get("message"):
+                            # Graceful-refusal paths (nonexistent vendor,
+                            # out-of-domain question) return {error,
+                            # message}, not {narrative, evidence} -- surface
+                            # that message directly instead of falling
+                            # through to a blank "(no answer returned)".
+                            data = {"narrative": data["message"], "evidence": {}}
+                    except Exception as e:
+                        data = {"narrative": f"Something went wrong reaching the agent: {e}", "evidence": {}}
+                    status_ph.empty()
+                    st.write(data.get("narrative", "(no answer returned)"))
+                    if data.get("comparison"):
+                        render_comparison_evidence(data.get("invoices") or [])
+                    elif data.get("evidence"):
+                        render_evidence(data["evidence"], data.get("tax_evidence"))
+
+                st.session_state.messages.append({
+                    "role": "assistant", "content": data.get("narrative", "(no answer returned)"),
+                    "evidence": data.get("evidence"), "tax_evidence": data.get("tax_evidence"),
+                    "comparison": data.get("comparison", False), "invoices": data.get("invoices"),
+                })
+
         if st.session_state.messages:
             # Auto-scroll on every rerun -- the sticky input only stays
             # visible once you've *already* scrolled near it; without this,
@@ -942,69 +1056,18 @@ with tab_ask:
     st.session_state.pending_question = None
 
     if question:
-        # Deliberately NOT rendered live/inline here (no st.chat_message
-        # calls in this block) -- this code runs *after* chat_input above,
+        # Phase A: append immediately and rerun -- fast (pure layout, no
+        # network call), so effectively instant. The very next pass sees a
+        # non-empty st.session_state.messages ending in this user turn, so
+        # show_landing correctly flips to the conversation branch (if this
+        # was the first question) and the "awaiting" block above picks it
+        # up and does the real work live, in the one DOM position that's
+        # actually above the sticky chat_input. Deliberately NOT rendered
+        # live/inline on THIS pass -- this code runs after chat_input above,
         # so anything drawn here would land below the sticky input rather
-        # than above it, defeating the whole point of pinning it. Instead:
-        # process silently, append both turns to session_state, then
-        # st.rerun() so the history loop above (which now includes this
-        # turn) draws everything in the correct order on the very next
-        # pass, with chat_input rendered fresh (and empty) after it again.
+        # than above it. See the "awaiting" block above for where the real
+        # POST call, loading captions, and response now actually render.
         st.session_state.messages.append({"role": "user", "content": question})
-        # Wrapped + auto-scrolled for the same reason the fixed input needed
-        # position:fixed in the first place: this spinner is the LAST thing
-        # in the flow at this exact moment (Q3's own bubble doesn't exist in
-        # the DOM yet -- the message loop above already ran before this
-        # question was appended to session_state), and the scroll position
-        # left over from the PREVIOUS rerun has no reason to already show
-        # it. Confirmed live: it was rendering directly behind the fixed,
-        # opaque input bar, fully hidden. The container's own bottom padding
-        # (see CSS -- matches the fixed input's real footprint) is what
-        # actually creates clearance; scrollIntoView(block:'end') then
-        # aligns that padding's bottom edge with the viewport bottom, which
-        # leaves the visible spinner text sitting just above the bar
-        # instead of behind it. The scroll script sits INSIDE the same
-        # container, before the spinner -- by the time its setTimeout
-        # fires, Streamlit has already rendered the spinner text below it
-        # in the same box, so the container's measured height is correct.
-        with st.container(key="loading_row"):
-            components.html("""
-                <script>
-                setTimeout(function() {
-                    const el = window.parent.document.querySelector('.st-key-loading_row');
-                    if (el) { el.scrollIntoView({block: 'end', behavior: 'auto'}); }
-                }, 60);
-                </script>
-            """, height=0)
-            with st.spinner("Looking this up across all three sources..."):
-                try:
-                    # Prior turns only -- exclude the question just appended
-                    # above. role/content ONLY, never the evidence/tax_evidence
-                    # JSON blobs: the narrative prose already states prior
-                    # figures in plain language, and sending the raw structured
-                    # evidence would balloon token cost for no resolution
-                    # benefit (Parse Intent only needs to know *what* was asked
-                    # and answered, not re-derive numbers from it).
-                    prior_turns = st.session_state.messages[:-1]
-                    history = [{"role": m["role"], "content": m["content"]}
-                               for m in prior_turns[-(HISTORY_TURNS * 2):]]
-                    resp = requests.post(f"{ORCHESTRATOR_BASE}/webhook/uc1-ask",
-                                          json={"question": question, "history": history}, timeout=90)
-                    data = resp.json()
-                    if "narrative" not in data and data.get("message"):
-                        # Graceful-refusal paths (nonexistent vendor, out-of-
-                        # domain question) return {error, message}, not
-                        # {narrative, evidence} -- surface that message
-                        # directly instead of falling through to a blank
-                        # "(no answer returned)".
-                        data = {"narrative": data["message"], "evidence": {}}
-                except Exception as e:
-                    data = {"narrative": f"Something went wrong reaching the agent: {e}", "evidence": {}}
-        st.session_state.messages.append({
-            "role": "assistant", "content": data.get("narrative", "(no answer returned)"),
-            "evidence": data.get("evidence"), "tax_evidence": data.get("tax_evidence"),
-            "comparison": data.get("comparison", False), "invoices": data.get("invoices"),
-        })
         st.rerun()
 
 
@@ -1174,6 +1237,183 @@ FIXTURES = {
         },
     },
 }
+
+
+def _render_calc_steps(steps: list) -> None:
+    """steps: list of (label, formula_html, note_html_or_None). formula_html
+    and note_html must already be fully-built HTML fragments -- any dynamic
+    text embedded in them (category names, source filenames, TDS sections)
+    must already be html.escape()'d by the caller; only the money()/rate()
+    helpers below (which never touch user- or LLM-controlled strings) may
+    produce unescaped content."""
+    rows = []
+    for label, formula_html, note_html in steps:
+        note = f'<div class="calc-step-note">{note_html}</div>' if note_html else ""
+        rows.append(
+            f'<div class="calc-step">'
+            f'<div class="calc-step-label">{html.escape(label)}</div>'
+            f'<div class="calc-step-formula mono">{formula_html}</div>'
+            f'{note}</div>'
+        )
+    st.markdown(f'<div class="calc-steps">{"".join(rows)}</div>', unsafe_allow_html=True)
+
+
+def render_step_by_step_calculation(computed: dict, tax_evidence: dict, is_category_only: bool) -> None:
+    """Formula walkthrough for UC2's independently-reconstructed figure.
+
+    HARD INVARIANT: this function NEVER performs arithmetic of its own --
+    every number here was already computed by service/compute.py and handed
+    back on `computed`/`tax_evidence`; this only formats/labels them into a
+    readable equation string (e.g. f"{money(a)} x {rate(r)} = {money(b)}"
+    where a, r, b are all pre-computed, never re-derived here). If
+    compute.py's rounding/split/waterfall logic ever changes, only this
+    function's labels need updating -- it must never grow an independent
+    copy of that math. See compute.py's compute()/compute_gst()/
+    compute_tds() for the real source of every figure narrated below.
+    """
+    gst = computed.get("gst") or {}
+    gst_sub = tax_evidence.get("gst") or {}
+    tds_sub = tax_evidence.get("tds") or {}
+    base_amount = computed.get("base_amount")
+
+    def money(v) -> str:
+        return f"₹{v:,.0f}" if v is not None else "—"
+
+    def rate(v) -> str:
+        return f"{v:g}%" if v is not None else "—"
+
+    # ---- Branch: blocked / category conflict -------------------------
+    if computed.get("tax_treatment_refused"):
+        cc = computed.get("category_conflict") or {}
+        ledger_terms = []
+        if computed.get("advances_applied"):
+            ledger_terms.append(("advances applied", computed["advances_applied"]))
+        if computed.get("credits_applied"):
+            ledger_terms.append(("credits applied", computed["credits_applied"]))
+        if computed.get("payments_made"):
+            ledger_terms.append(("already paid", computed["payments_made"]))
+        formula = money(base_amount)
+        for label, val in ledger_terms:
+            formula += f" − {money(val)} ({label})"
+        formula += f" = {money(computed.get('pre_tax_ledger_position'))}"
+
+        _render_calc_steps([
+            ("1. Base amount", f"{money(base_amount)} — invoice base amount on file", None),
+            ("2. Pre-tax ledger position", formula, None),
+            ("3. GST, TDS, gross liability, net disbursement due", "Withheld — category conflict",
+             f"PO says <strong>{html.escape(str(cc.get('po_category', '—')))}</strong>, invoice says "
+             f"<strong>{html.escape(str(cc.get('invoice_category', '—')))}</strong> — no rule to resolve which "
+             f"is correct, so every tax-dependent figure is withheld pending review rather than shown as zero "
+             f"or estimated."),
+        ])
+        return
+
+    # ---- Branches: normal / draft -------------------------------------
+    steps = []
+
+    if is_category_only:
+        steps.append(("1. Base amount", f"{money(base_amount)} — as submitted, not independently verified "
+                       "(no invoice record exists yet for this draft)", None))
+    else:
+        steps.append(("1. Base amount", f"{money(base_amount)} — invoice base amount on file", None))
+
+    if gst_sub.get("status") == "found" and gst_sub.get("rate_pct") is not None:
+        gst_rate_line = (f"{rate(gst_sub['rate_pct'])} — per "
+                          f"<em>{html.escape(str(gst_sub.get('source_filename') or '—'))}</em> "
+                          f"(see Tax document sources below)")
+    else:
+        gst_rate_line = "Could not be determined — no matching GST rule found in the tax corpus."
+    steps.append(("2. GST rate", gst_rate_line, None))
+
+    if gst.get("gst_amount") is not None and gst_sub.get("rate_pct") is not None:
+        gst_formula = f"{money(base_amount)} × {rate(gst_sub['rate_pct'])} = {money(gst['gst_amount'])}"
+    else:
+        gst_formula = "—"
+    steps.append(("3. GST amount", gst_formula, None))
+
+    split_type = gst.get("split_type")
+    if is_category_only:
+        # Draft mode uses a hardcoded same-state placeholder (see
+        # uc2_orchestration._handle_new_invoice's vendor_state=
+        # office_state="Karnataka") -- never present this as a verified pairing.
+        if gst.get("cgst") is not None:
+            split_line = f"{money(gst['gst_amount'])} ÷ 2 = {money(gst['cgst'])} CGST + {money(gst['sgst'])} SGST"
+            split_note = ("Estimated — this draft has no real vendor/office record yet, so an assumed "
+                           "same-state pairing is used; this is not a verified CGST/SGST-vs-IGST classification.")
+        else:
+            split_line, split_note = "—", None
+    elif split_type == "IGST":
+        split_line = f"{money(gst.get('gst_amount'))} → IGST (no CGST/SGST split)"
+        split_note = "Inter-state — vendor and office are in different states."
+    elif split_type == "UNKNOWN":
+        split_line = "Could not be determined"
+        split_note = ("This invoice has no linked purchase order/office on file to compare vendor and office "
+                       "state against. The total GST amount above is still correct; only the CGST/SGST-vs-IGST "
+                       "classification is withheld.")
+    elif split_type == "CGST_SGST":
+        split_line = f"{money(gst.get('gst_amount'))} ÷ 2 = {money(gst.get('cgst'))} CGST + {money(gst.get('sgst'))} SGST"
+        odd_note = (" (Split rounds to the nearest rupee — CGST and SGST can differ by ₹1 on an odd total.)"
+                    if gst.get("cgst") is not None and gst.get("sgst") is not None and gst["cgst"] != gst["sgst"]
+                    else "")
+        split_note = "Intra-state — vendor and office are in the same state." + odd_note
+    else:
+        split_line, split_note = "—", None
+    steps.append(("4. GST split", split_line, split_note))
+
+    if computed.get("gross_liability") is not None and gst.get("gst_amount") is not None:
+        gross_formula = f"{money(base_amount)} + {money(gst['gst_amount'])} (GST) = {money(computed['gross_liability'])}"
+    else:
+        gross_formula = "—"
+    steps.append(("5. Gross liability", gross_formula, None))
+
+    if tds_sub.get("status") == "found" and tds_sub.get("rate_pct") is not None:
+        section = f" under section {html.escape(str(tds_sub['tds_section']))}" if tds_sub.get("tds_section") else ""
+        tds_rate_line = (f"{rate(tds_sub['rate_pct'])}{section} — per "
+                          f"<em>{html.escape(str(tds_sub.get('source_filename') or '—'))}</em> "
+                          f"(see Tax document sources below)")
+    elif tds_sub:
+        tds_rate_line = "No applicable TDS rule found for this category — treated as 0%."
+    else:
+        tds_rate_line = "—"
+    steps.append(("6. TDS rate", tds_rate_line, None))
+
+    if computed.get("tds_amount") is not None:
+        eff_tds_rate = tds_sub.get("rate_pct") if tds_sub.get("rate_pct") is not None else 0.0
+        tds_formula = (f"{money(base_amount)} × {rate(eff_tds_rate)} = {money(computed['tds_amount'])} "
+                        f"(on the base amount, excluding GST — CBDT Circular 23/2017)")
+    else:
+        tds_formula = "—"
+    steps.append(("7. TDS amount", tds_formula, None))
+
+    if is_category_only:
+        if computed.get("gross_liability") is not None and computed.get("tds_amount") is not None:
+            net_formula = (f"{money(computed['gross_liability'])} − {money(computed['tds_amount'])} (TDS) "
+                            f"= {money(computed.get('net_disbursement_due'))}")
+        else:
+            net_formula = "—"
+        net_note = ("Advances applied, credits applied, and payments made are not part of this check — this is "
+                     "a draft with no invoice record yet, so those figures are structurally ₹0, not merely "
+                     "small. This is a rate-only projection, not a payable figure.")
+    else:
+        parts = []
+        if computed.get("advances_applied"):
+            parts.append(("advances applied", computed["advances_applied"]))
+        if computed.get("credits_applied"):
+            parts.append(("credits applied", computed["credits_applied"]))
+        if computed.get("payments_made"):
+            parts.append(("already paid", computed["payments_made"]))
+        if computed.get("gross_liability") is not None and computed.get("tds_amount") is not None:
+            net_formula = f"{money(computed['gross_liability'])} − {money(computed['tds_amount'])} (TDS)"
+            for label, val in parts:
+                net_formula += f" − {money(val)} ({label})"
+            net_formula += f" = {money(computed.get('net_disbursement_due'))}"
+        else:
+            net_formula = "—"
+        net_note = None
+    steps.append(("8. Net disbursement due", net_formula, net_note))
+
+    _render_calc_steps(steps)
+
 
 def _validate_and_render(payload: dict, key_suffix: str) -> None:
     """Validates one payment advice and renders its full result (verdict,
@@ -1397,6 +1637,11 @@ def _validate_and_render(payload: dict, key_suffix: str) -> None:
                 .map(_match_style, subset=["Match?"])
             )
             st.table(styled)
+
+        computed_data = result.get("computed")
+        if computed_data:
+            with st.expander("Step-by-step calculation"):
+                render_step_by_step_calculation(computed_data, result.get("tax_evidence") or {}, is_category_only)
 
         if result.get("tax_evidence"):
             with st.expander("Tax document sources for this reconstruction"):
