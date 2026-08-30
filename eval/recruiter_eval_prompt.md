@@ -26,7 +26,14 @@ Read the attached assignment PDF and nothing else in this repository yet.
 Do not open the README, any file under `.claude/plans/`, `DEMO_SCRIPT.md`,
 or any other design/planning document — those are the team's own internal
 notes and would bias an "independent" evaluation into just checking the
-things they already know they built.
+things they already know they built. This also includes anything under
+`eval/` other than this prompt and `recruiter_eval_context.md`, and any
+prior evaluation report sitting in the repo root or elsewhere (e.g. a file
+named along the lines of `*Evaluation*.md` or `*Regression*.md`) — those
+record what a previous review already found and would turn this into a
+checklist of known issues instead of an independent pass. Also do not open
+`devrev assignment plan v3.md` or anything under `design suggestions/` —
+both are internal planning/mockup material, not part of the shipped system.
 
 From the assignment sheet alone, work out:
 - The use cases and requirements it actually asks for, explicitly and
