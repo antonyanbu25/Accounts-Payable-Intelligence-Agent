@@ -8,24 +8,60 @@ improvement: real bind parameters (%(name)s) instead of n8n's raw string
 interpolation with manually-doubled quotes, which was only ever a workaround
 for n8n's own expression syntax, not a design choice worth preserving.
 
-Connection pattern matches frontend/app.py's get_db_connection() exactly
-(psycopg2, RealDictCursor, connect-per-call, no pooling) -- the one DB
-access pattern already proven to work from Render in this codebase.
+Connection pattern draws from a small pool (see _get_db_pool), not a fresh
+psycopg2.connect() per call -- found live (recruiter-reported latency,
+timed directly against this app's real DATABASE_URL) that opening a fresh
+connection costs 0.9-2.0s here (a remote Postgres TCP+TLS handshake +
+auth), while a query itself is ~90ms. A single UC1 request opens 1-2 of
+these per answer (resolve_vendor + retrieve_invoice_facts_uc1, e.g.), so
+connect-per-call was multiplying that handshake cost into every single
+answer's latency. frontend/app.py's OWN separate get_db_connection() (its
+Browse Mock Data / Manual Form invoice picker) had the identical pattern
+and got the identical fix first; this is that same fix applied here.
+_get_db_pool() is memoized the same way service/main.py already memoizes
+get_corpus()/get_client() (@lru_cache, one instance for the process
+lifetime) -- no Streamlit available on this side to use its
+@st.cache_resource equivalent.
 
-DATABASE_URL is read lazily, inside get_db_connection(), NOT at module
-import time -- this module is now imported transitively by main.py itself,
-so reading the env var at module scope would break /health and every
+DATABASE_URL is read lazily, inside _get_db_pool(), NOT at module import
+time -- this module is now imported transitively by main.py itself, so
+reading the env var at module scope would break /health and every
 existing test in any environment without Postgres configured.
 """
 import os
+from functools import lru_cache
 from typing import Optional
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
+
+
+@lru_cache()
+def _get_db_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    """A real pool, not a single shared connection cached the same way --
+    FastAPI can genuinely serve concurrent requests on multiple threads,
+    and a bare psycopg2 connection isn't safe for simultaneous use across
+    them. minconn=1 keeps at least one warm connection open at all times;
+    maxconn=5 is comfortably above this service's actual concurrent need
+    (each UC1/UC2 request opens at most 2 connections in sequence, never
+    several at once)."""
+    return psycopg2.pool.ThreadedConnectionPool(
+        minconn=1, maxconn=5, dsn=os.environ["DATABASE_URL"], cursor_factory=psycopg2.extras.RealDictCursor,
+    )
 
 
 def get_db_connection():
-    return psycopg2.connect(os.environ["DATABASE_URL"], cursor_factory=psycopg2.extras.RealDictCursor)
+    """Borrows a connection from the shared pool (see _get_db_pool) instead
+    of opening a fresh one. Callers MUST release it via
+    release_db_connection(conn) when done -- never conn.close(), which
+    would destroy the pooled connection outright instead of returning it
+    for reuse, defeating the whole point of pooling."""
+    return _get_db_pool().getconn()
+
+
+def release_db_connection(conn) -> None:
+    _get_db_pool().putconn(conn)
 
 
 def _floatify(row: Optional[dict], keys: list) -> Optional[dict]:
@@ -100,7 +136,7 @@ LIMIT 5;"""
             cur.execute(sql, {"name": name})
             rows = [dict(r) for r in cur.fetchall()]
     finally:
-        conn.close()
+        release_db_connection(conn)
     for row in rows:
         _floatify(row, ["score"])
     return rows
@@ -129,7 +165,7 @@ def retrieve_invoice_facts_uc1(vendor_id: int, invoice_id: Optional[int] = None)
             row = cur.fetchone()
             row = dict(row) if row else None
     finally:
-        conn.close()
+        release_db_connection(conn)
     return _floatify(row, _INVOICE_NUMERIC_KEYS)
 
 
@@ -151,7 +187,7 @@ ORDER BY invoice_date DESC;"""
             cur.execute(sql, {"vendor_id": vendor_id})
             rows = [dict(r) for r in cur.fetchall()]
     finally:
-        conn.close()
+        release_db_connection(conn)
     for row in rows:
         _floatify(row, ["base_amount"])
     return rows
@@ -170,7 +206,7 @@ def retrieve_invoice_facts_comparison(vendor_id: int, invoice_ids: list) -> list
             cur.execute(sql, {"vendor_id": vendor_id, "invoice_ids": invoice_ids})
             rows = [dict(r) for r in cur.fetchall()]
     finally:
-        conn.close()
+        release_db_connection(conn)
     return [_floatify(r, _INVOICE_NUMERIC_KEYS) for r in rows]
 
 
@@ -197,7 +233,7 @@ WHERE v.vendor_id = %(vendor_id)s;"""
             row = cur.fetchone()
             row = dict(row) if row else None
     finally:
-        conn.close()
+        release_db_connection(conn)
     if row and row.get("invoices"):
         for inv in row["invoices"]:
             _floatify(inv, ["base_amount"])
@@ -242,5 +278,5 @@ LIMIT 1;"""
             row = cur.fetchone()
             row = dict(row) if row else None
     finally:
-        conn.close()
+        release_db_connection(conn)
     return _floatify(row, _INVOICE_NUMERIC_KEYS)
