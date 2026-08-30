@@ -311,6 +311,70 @@ def test_unapplied_advance_fallback_states_it_too(monkeypatch):
     assert "overpayment risk" in result["narrative"]
 
 
+def test_stale_vendor_rate_instructed_and_allowed_by_guard(monkeypatch):
+    """Regression test for a real gap found while writing the demo script:
+    retrieve_invoice_facts_uc1() has fetched gst_rate_stated/
+    gst_amount_stated all along, but nothing in this branch ever compared
+    it against the true rate or instructed the narration to mention it --
+    the documented "vendor's own invoice states a superseded rate" scenario
+    (README's Assumption & Decision Log, eval case
+    T1-vendor-stated-superseded-rate) was silently never actually surfaced
+    in live narration. The eval only checks computed figures, never
+    narrative text, so nothing caught this until a live check."""
+    facts = _facts(gst_rate_stated=18.0, gst_amount_stated=19800.0)
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_invoice_facts_uc1", lambda vid, iid: facts)
+    monkeypatch.setattr(uc1_orchestration, "tax_lookup", lambda req: _tax_response(rate_pct=12.0))
+    monkeypatch.setattr(uc1_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=110000.0, gst={"gst_amount": 13200.0, "cgst": 6600.0, "sgst": 6600.0, "igst": None, "split_type": "CGST_SGST"},
+        tds_amount=11000.0, gross_liability=123200.0, net_disbursement_due=112200.0,
+        pre_tax_ledger_position=110000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False))
+    captured_prompt = {}
+
+    def fake_call_text(prompt, max_tokens):
+        captured_prompt["text"] = prompt
+        return "GST applied at the correct 12% rate, though the vendor's invoice states 18%."
+
+    monkeypatch.setattr(uc1_orchestration, "call_text", fake_call_text)
+    captured_guard_req = {}
+
+    def fake_guard(req):
+        captured_guard_req["values"] = req.structured_values
+        return NarrationCheckResponse(passed=True, numbers_found_in_narrative=[], numbers_not_in_structured_result=[])
+
+    monkeypatch.setattr(uc1_orchestration, "check_narration_endpoint", fake_guard)
+
+    result = uc1_orchestration._handle_single_invoice(
+        {"invoice_id_mentioned": 17}, {"vendor_id": 1, "legal_name": "TechNova Software Solutions Pvt Ltd"})
+    assert "18" in captured_prompt["text"] and "12" in captured_prompt["text"]
+    assert "MUST state this discrepancy plainly" in captured_prompt["text"]
+    assert 18.0 in captured_guard_req["values"] and 12.0 in captured_guard_req["values"]
+    assert result["guard"] == "passed"
+
+
+def test_stale_vendor_rate_not_flagged_when_rates_match(monkeypatch):
+    """No false positive: when the vendor's stated rate happens to match
+    the true current rate, no discrepancy instruction should be added."""
+    facts = _facts(gst_rate_stated=12.0, gst_amount_stated=13200.0)
+    monkeypatch.setattr(uc1_orchestration.db, "retrieve_invoice_facts_uc1", lambda vid, iid: facts)
+    monkeypatch.setattr(uc1_orchestration, "tax_lookup", lambda req: _tax_response(rate_pct=12.0))
+    monkeypatch.setattr(uc1_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=110000.0, gst={"gst_amount": 13200.0, "cgst": 6600.0, "sgst": 6600.0, "igst": None, "split_type": "CGST_SGST"},
+        tds_amount=11000.0, gross_liability=123200.0, net_disbursement_due=112200.0,
+        pre_tax_ledger_position=110000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False))
+    captured_prompt = {}
+
+    def fake_call_text(prompt, max_tokens):
+        captured_prompt["text"] = prompt
+        return "GST applied at 12%."
+
+    monkeypatch.setattr(uc1_orchestration, "call_text", fake_call_text)
+    _passing_guard(monkeypatch)
+
+    uc1_orchestration._handle_single_invoice(
+        {"invoice_id_mentioned": 17}, {"vendor_id": 1, "legal_name": "TechNova Software Solutions Pvt Ltd"})
+    assert "MUST state this discrepancy" not in captured_prompt["text"]
+
+
 def test_blocked_vendor_lookup_gets_narration_nudge(monkeypatch):
     """Regression test for the second finding from the same eval: a
     vendor-lookup question (no invoice named) about a blocked vendor got a

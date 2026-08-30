@@ -281,18 +281,40 @@ def _handle_single_invoice(parsed: dict, vendor: dict) -> dict:
                            "its own note, since releasing this payment without accounting for it carries a "
                            "real overpayment risk. Never omit or soften this note.")
 
+    # GAP FIX (found live, not in the n8n original's port -- gst_rate_stated
+    # was fetched by retrieve_invoice_facts_uc1() all along but never
+    # compared against the true rate anywhere in this branch, so the
+    # documented "vendor's own invoice states a superseded rate" scenario
+    # -- README's Assumption & Decision Log, and eval case
+    # T1-vendor-stated-superseded-rate -- was silently never actually
+    # surfaced in the live narration; the eval only checks the computed
+    # figures, never the narrative text, so nothing caught this. tax.gst
+    # (from _tax_lookup_and_compute above) is never None on this path --
+    # a category conflict short-circuits before reaching here (see
+    # _tax_lookup_and_compute), and a real "not found" tax status still
+    # returns a TaxLookupSubResult with a real (if None) rate_pct field.
+    stale_rate_note = ""
+    if facts.get("gst_rate_stated") is not None and tax.gst.rate_pct is not None \
+            and facts["gst_rate_stated"] != tax.gst.rate_pct:
+        stale_rate_note = (f" ALSO SEPARATELY: the vendor's own invoice states a GST rate of "
+                            f"{_num(facts['gst_rate_stated'])}%, but the actual current rate for this category "
+                            f"and date is {_num(tax.gst.rate_pct)}% -- you MUST state this discrepancy plainly. "
+                            "The vendor's invoice is internally consistent with itself but still wrong; never "
+                            "let the vendor-stated figure be mistaken for the correct one, and never use it in "
+                            "place of the true rate above.")
+
     prompt = ("Write a short (2-4 sentence), plain-language answer to an accounts-payable question, using "
               "ONLY the numbers in this JSON -- never invent or alter a figure. Vendor: "
               f"{facts['legal_name']}. Onboarding state on file: {facts['onboarding_state']} (vs. "
               f"GSTIN-registered state used for tax: {facts['registered_state']} -- mention this discrepancy "
-              "briefly if they differ)." + ambiguity_note + settled_note + unapplied_note + " Structured result: "
-              + json.dumps(computed.model_dump()))
+              "briefly if they differ)." + ambiguity_note + settled_note + unapplied_note + stale_rate_note
+              + " Structured result: " + json.dumps(computed.model_dump()))
     narrative = call_text(prompt, max_tokens=400)
 
     nums = [computed.base_amount, computed.gross_liability, computed.net_disbursement_due, computed.tds_amount,
             computed.pre_tax_ledger_position, facts["invoice_id"], facts["vendor_open_invoice_count"],
             computed.advances_applied, computed.credits_applied, computed.payments_made,
-            computed.unapplied_advance_advisory]
+            computed.unapplied_advance_advisory, facts.get("gst_rate_stated"), tax.gst.rate_pct]
     if computed.gst:
         nums.extend([computed.gst.get("gst_amount"), computed.gst.get("cgst"), computed.gst.get("sgst"), computed.gst.get("igst")])
     nums = [n for n in nums if n is not None]
@@ -306,8 +328,14 @@ def _handle_single_invoice(parsed: dict, vendor: dict) -> dict:
         advisory_suffix = (f" ⚠ Advisory: an unapplied advance of ₹{_num(computed.unapplied_advance_advisory)} "
                             "exists against this vendor/PO and has NOT been netted here -- a possible "
                             "overpayment risk if missed.")
+    stale_rate_suffix = ""
+    if facts.get("gst_rate_stated") is not None and tax.gst.rate_pct is not None \
+            and facts["gst_rate_stated"] != tax.gst.rate_pct:
+        stale_rate_suffix = (f" ℹ The vendor's own invoice states a GST rate of {_num(facts['gst_rate_stated'])}%, "
+                              f"but the correct current rate is {_num(tax.gst.rate_pct)}% -- the figures above "
+                              "use the correct rate, not the vendor's stated one.")
     fallback = (f"Net disbursement due: {_num(computed.net_disbursement_due)} "
-                f"(eligibility: {computed.eligibility}).{advisory_suffix}{GUARD_FALLBACK_SUFFIX}")
+                f"(eligibility: {computed.eligibility}).{advisory_suffix}{stale_rate_suffix}{GUARD_FALLBACK_SUFFIX}")
     return {"narrative": fallback, "evidence": computed.model_dump(), "tax_evidence": tax.model_dump(),
             "guard": "failed_fallback_used"}
 
