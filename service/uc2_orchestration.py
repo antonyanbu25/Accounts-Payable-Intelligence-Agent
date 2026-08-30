@@ -192,9 +192,10 @@ def _handle_existing_invoice(invoice_id: int, submitted_advice: dict) -> dict:
     ))
 
     if guard.passed:
-        return {"verdict": narrative, "diff": diff.model_dump(), "tax_evidence": tax.model_dump(), "guard": "passed"}
+        return {"verdict": narrative, "diff": diff.model_dump(), "tax_evidence": tax.model_dump(),
+                "computed": computed.model_dump(), "guard": "passed"}
     return {"verdict": _fallback_verdict_existing(diff), "diff": diff.model_dump(),
-            "tax_evidence": tax.model_dump(), "guard": "failed_fallback_used"}
+            "tax_evidence": tax.model_dump(), "computed": computed.model_dump(), "guard": "failed_fallback_used"}
 
 
 def _handle_new_invoice(submitted_advice: dict, invoice_date_str: str = None) -> dict:
@@ -224,6 +225,8 @@ def _handle_new_invoice(submitted_advice: dict, invoice_date_str: str = None) ->
 
     if guard.passed:
         return {"mode": "category_only", "verdict": narrative, "diff": diff.model_dump(),
-                "tax_evidence": tax.model_dump(), "guard": "passed", "note": NEW_INVOICE_NOTE}
+                "tax_evidence": tax.model_dump(), "computed": computed.model_dump(),
+                "guard": "passed", "note": NEW_INVOICE_NOTE}
     return {"mode": "category_only", "verdict": _fallback_verdict_new_invoice(diff), "diff": diff.model_dump(),
-            "tax_evidence": tax.model_dump(), "guard": "failed_fallback_used", "note": NEW_INVOICE_NOTE}
+            "tax_evidence": tax.model_dump(), "computed": computed.model_dump(),
+            "guard": "failed_fallback_used", "note": NEW_INVOICE_NOTE}

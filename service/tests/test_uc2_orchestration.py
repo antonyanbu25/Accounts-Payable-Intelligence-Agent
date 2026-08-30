@@ -209,6 +209,100 @@ def test_draft_mode_fallback_excludes_base_amount_and_keeps_note(monkeypatch):
     assert result["note"]  # fallback keeps the note, unlike UC1's fallbacks
 
 
+def test_computed_returned_on_guard_passed(monkeypatch):
+    """The full ComputeResponse must reach the frontend (as `computed`) so
+    the step-by-step calculation walkthrough has real figures to render --
+    previously built in memory (see uc2_orchestration's `computed` var) and
+    silently discarded before this fix."""
+    facts = _facts_uc2()
+    monkeypatch.setattr(uc2_orchestration.db, "retrieve_invoice_facts_uc2", lambda invoice_id: facts)
+    monkeypatch.setattr(uc2_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc2_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=100000.0, gst={"gst_amount": 18000.0, "cgst": 9000.0, "sgst": 9000.0, "igst": None, "split_type": "CGST_SGST"},
+        tds_amount=10000.0, gross_liability=118000.0, net_disbursement_due=108000.0,
+        pre_tax_ledger_position=100000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False))
+    monkeypatch.setattr(uc2_orchestration, "do_diff", lambda req: DiffResponse(
+        overall_match=True, blocked=False, fields=[], eligible=True))
+    monkeypatch.setattr(uc2_orchestration, "call_text", lambda prompt, max_tokens: "Correct.")
+    monkeypatch.setattr(uc2_orchestration, "check_narration_endpoint", lambda req: NarrationCheckResponse(
+        passed=True, numbers_found_in_narrative=[], numbers_not_in_structured_result=[]))
+
+    result = uc2_orchestration.handle_uc2_validate(1, {"base_amount": 100000.0})
+
+    assert "computed" in result
+    assert result["computed"]["gross_liability"] == 118000.0
+    assert result["computed"]["net_disbursement_due"] == 108000.0
+
+
+def test_computed_returned_on_guard_fallback(monkeypatch):
+    """Same as above, but on the guard-rejected/fallback path -- `computed`
+    must not be dropped just because narration failed the guard."""
+    facts = _facts_uc2()
+    monkeypatch.setattr(uc2_orchestration.db, "retrieve_invoice_facts_uc2", lambda invoice_id: facts)
+    monkeypatch.setattr(uc2_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc2_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=100000.0, gst={"gst_amount": 18000.0, "cgst": 9000.0, "sgst": 9000.0, "igst": None, "split_type": "CGST_SGST"},
+        tds_amount=10000.0, gross_liability=118000.0, net_disbursement_due=108000.0,
+        pre_tax_ledger_position=100000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False))
+    monkeypatch.setattr(uc2_orchestration, "do_diff", lambda req: DiffResponse(
+        overall_match=True, blocked=False, fields=[], eligible=True))
+    monkeypatch.setattr(uc2_orchestration, "call_text", lambda prompt, max_tokens: "hallucinated nonsense")
+    monkeypatch.setattr(uc2_orchestration, "check_narration_endpoint", lambda req: NarrationCheckResponse(
+        passed=False, numbers_found_in_narrative=[99], numbers_not_in_structured_result=[99]))
+
+    result = uc2_orchestration.handle_uc2_validate(1, {"base_amount": 100000.0})
+
+    assert result["guard"] == "failed_fallback_used"
+    assert "computed" in result
+    assert result["computed"]["gross_liability"] == 118000.0
+
+
+def test_computed_returned_on_category_conflict(monkeypatch):
+    """Blocked/category-conflict responses must still carry `computed` so
+    the step-by-step view can render its pre-tax-ledger-only branch."""
+    facts = _facts_uc2(po_category="Software", invoice_category="Services")
+    monkeypatch.setattr(uc2_orchestration.db, "retrieve_invoice_facts_uc2", lambda invoice_id: facts)
+    monkeypatch.setattr(uc2_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc2_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=100000.0, eligibility="on hold: category unresolved",
+        eligibility_reasons=[], tax_treatment_refused=True,
+        pre_tax_ledger_position=100000.0,
+        category_conflict={"po_category": "Software", "invoice_category": "Services"}))
+    monkeypatch.setattr(uc2_orchestration, "do_diff", lambda req: DiffResponse(
+        overall_match=False, blocked=True, blocked_reason="unresolved", fields=[], eligible=True))
+    monkeypatch.setattr(uc2_orchestration, "call_text", lambda prompt, max_tokens: "Held for review.")
+    monkeypatch.setattr(uc2_orchestration, "check_narration_endpoint", lambda req: NarrationCheckResponse(
+        passed=True, numbers_found_in_narrative=[], numbers_not_in_structured_result=[]))
+
+    result = uc2_orchestration.handle_uc2_validate(1, {"base_amount": 100000.0})
+
+    assert "computed" in result
+    assert result["computed"]["tax_treatment_refused"] is True
+    assert result["computed"]["category_conflict"] == {"po_category": "Software", "invoice_category": "Services"}
+
+
+def test_computed_returned_in_draft_mode(monkeypatch):
+    """Draft/category-only mode must also carry `computed` -- this is the
+    branch whose net-disbursement figure the frontend needs to caption as
+    'structurally zero ledger terms', not just 'coincidentally zero'."""
+    monkeypatch.setattr(uc2_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc2_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=10000.0, gst={"gst_amount": 1800.0, "cgst": 900.0, "sgst": 900.0, "igst": None, "split_type": "CGST_SGST"},
+        tds_amount=0.0, gross_liability=11800.0, net_disbursement_due=11800.0,
+        pre_tax_ledger_position=10000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False))
+    monkeypatch.setattr(uc2_orchestration, "do_diff", lambda req: DiffResponse(
+        overall_match=True, blocked=False, fields=[], eligible=True))
+    monkeypatch.setattr(uc2_orchestration, "call_text", lambda prompt, max_tokens: "Rate matches.")
+    monkeypatch.setattr(uc2_orchestration, "check_narration_endpoint", lambda req: NarrationCheckResponse(
+        passed=True, numbers_found_in_narrative=[], numbers_not_in_structured_result=[]))
+
+    result = uc2_orchestration.handle_uc2_validate(None, {"base_amount": 10000.0, "category": "Furniture"})
+
+    assert "computed" in result
+    assert result["computed"]["advances_applied"] == 0.0
+    assert result["computed"]["net_disbursement_due"] == 11800.0
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
