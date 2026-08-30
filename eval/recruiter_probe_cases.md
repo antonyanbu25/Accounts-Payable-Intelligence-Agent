@@ -18,8 +18,8 @@ probes, run and judged live, one at a time.
 4. **Open-ended future date** — does "effective_to: null" (still current)
    actually behave as "no upper bound", or does something silently cap it?
 5. **Date before any regulation existed** — tested in isolation earlier
-   (unit test), never through the live n8n path. Recruiters re-test what
-   was only unit-tested.
+   (unit test), never through the live orchestration path. Recruiters re-test
+   what was only unit-tested.
 6. **UC2 against a blocked vendor** — do amounts still get validated
    correctly while eligibility separately (and visibly) reflects the block?
    Common bug: eligibility gating silently overrides or hides the diff.

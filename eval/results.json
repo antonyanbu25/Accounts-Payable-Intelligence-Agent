@@ -1,5 +1,5 @@
 {
-  "pass_count": 24,
+  "pass_count": 25,
   "total_count": 25,
   "results": [
     {
@@ -101,8 +101,8 @@
     {
       "id": "M2-topic-change-no-false-continuity",
       "type": "multi_turn",
-      "passed": false,
-      "detail": "gst rate: expected 18.0, got None; expected note to mention 'category-level answer', got note=None -- a vendor/invoice got resolved when the question was actually vendor-less (false continuity from history) [info: narration fallback used, guard=None -- numbers still verified correct]"
+      "passed": true,
+      "detail": "OK"
     },
     {
       "id": "M3-recency-over-depth",

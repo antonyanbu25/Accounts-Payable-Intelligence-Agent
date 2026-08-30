@@ -8,7 +8,7 @@ traceable, evidence-backed answer, and (2) independently reconstruct and
 validate a human-prepared payment advice before it's paid.
 
 **Live app:** https://ap-agent-frontend-865q.onrender.com
-(three services — Streamlit, n8n, FastAPI — first request after idle may
+(two services — Streamlit, FastAPI — first request after idle may
 take a few seconds while the instance wakes; see [Hosting](#hosting--running-it-yourself))
 
 This document is the written assumption/decision log the assignment asks
@@ -43,22 +43,38 @@ the LLM's output, not a prompt instruction the model could ignore.
 ## Architecture
 
 ```
-Streamlit  →  n8n (webhook orchestration)
+Streamlit  →  FastAPI (native orchestration, /webhook/uc1-ask + /webhook/uc2-validate)
                  ├─ Claude: parse question → fixed intent schema (never SQL, never a number)
                  ├─ Postgres: vendor resolution (pg_trgm) + raw record retrieval
                  ├─ conflict/authority resolution (before tax lookup — see below)
-                 ├─ FastAPI /tax-lookup: deterministic HSN/SAC + jurisdiction + effective-date rule selection
-                 ├─ FastAPI /compute (or /diff for UC2): all arithmetic, in Python, Decimal-rounded
+                 ├─ /tax-lookup: deterministic HSN/SAC + jurisdiction + effective-date rule selection
+                 ├─ /compute (or /diff for UC2): all arithmetic, in Python, Decimal-rounded
                  ├─ Claude: narrate the structured result (narration only, never introduces a value)
                  └─ numeral guard: every number in the narrative must exist in the structured result,
                     or the narration is discarded and a templated fallback is shown instead
 ```
 
 Money math and rate selection live in a pure-Python service
-([service/compute.py](service/compute.py), [service/tax_lookup.py](service/tax_lookup.py)) with 44
-unit/integration tests — not in a prompt. n8n gives the orchestration and
-retrieval logic a visible, editable canvas, which matters for an AP team
-that isn't going to read Python to understand how an answer was produced.
+([service/compute.py](service/compute.py), [service/tax_lookup.py](service/tax_lookup.py)) with 77
+unit/integration tests — not in a prompt. `/tax-lookup`, `/compute`, `/diff`, and the numeral guard
+are plain FastAPI routes, called as direct in-process Python function calls by the orchestration
+layer (`service/uc1_orchestration.py`, `service/uc2_orchestration.py`) — no network hop between them.
+
+**This wasn't the original design — it's the result of removing a real component that stopped
+earning its complexity.** The first working version orchestrated both use cases through a
+self-hosted n8n workflow engine, chosen specifically to give a non-technical AP team a visible,
+editable canvas separate from the Python codebase. In practice, across the life of this project,
+every single change to either workflow — including two real production bug fixes — was made by
+editing a Python script that deletes and rebuilds the whole n8n workflow via its REST API, never by
+opening the n8n editor itself. That's strictly worse than writing the same logic directly: no type
+checking, no unit tests, JS expressions embedded in Python string literals, and n8n's own
+multi-item execution model (`.first()`/`.all()`/`.item` pairing) fighting the problem rather than
+solving it. It also caused two real deploy-time bugs this session, because n8n workflows live in
+n8n's own storage — invisible to a normal `git push` — so a merged, working fix could sit silently
+un-deployed. The editable-canvas rationale never actually got used in practice, so n8n was removed
+in favor of the architecture above; the two use cases' actual reasoning (intent parsing, retrieval,
+narration, the numeral guard) is unchanged, only the hop between them is gone. The n8n-based version
+is preserved on the `n8n-based` git branch as a fallback, not deleted outright.
 
 **Why not a knowledge graph.** DevRev's own product thesis centers on a
 knowledge graph unifying structured and unstructured data. At 3 sources with
@@ -72,7 +88,7 @@ scale boundary, not a rejection of the idea.
 
 ## Data model
 
-**Source A — Procurement Portal** (Postgres, queried natively by n8n):
+**Source A — Procurement Portal** (Postgres, queried natively by the FastAPI service):
 `office`, `vendor_onboarding`, `requisition`, `purchase_order`, `receipt`.
 
 **Source B — SAP-style Vendor & Payments DB** (Postgres): `vendor_master`
@@ -192,9 +208,13 @@ Every number appearing in LLM-generated narration is extracted by regex and
 checked against the structured computed result; a mismatch discards the
 narration and falls back to a templated response built directly from the
 structured fields. This was deliberately tested against real narration text
-(not just designed): the live eval run below shows it actually triggering
-and recovering correctly on `A4-multi-error-advice`, not just staying
-untested in the happy path.
+(not just designed): live eval runs against the hosted deployment have
+directly observed it triggering and recovering correctly (e.g. on
+`A4-multi-error-advice`, when Claude's phrasing that run happened to
+include a number outside the structured result) — real fallback behavior,
+not just an untested happy-path claim. Whether it fires on any given run
+depends on the LLM's exact phrasing, so it isn't guaranteed on every pass,
+but the mechanism has been proven live, not just designed and assumed.
 
 **UC2's three input modes** (pick a pre-baked example / manual structured
 form / paste JSON / upload a JSON or one-row CSV file). No mode routes
@@ -244,40 +264,75 @@ within the original timeline.
   for when time-of-supply differs from invoice date; using invoice_date as
   the sole effective-date key is a documented simplification, not a claim
   that it's always legally correct.
+- *Multi-invoice aggregation* — "what's our total outstanding across all
+  of TechNova's open invoices" is not answerable today. When no specific
+  invoice is named, the system resolves exactly one (the vendor's most
+  recent) and explicitly discloses that it's not the total, rather than
+  silently under-reporting — but it genuinely cannot sum across invoices.
+  UC1's comparison feature is deliberately scoped to exactly 2 named
+  invoices (for detecting a tax-rate difference between them), not an
+  aggregate over an arbitrary set; naming a 3rd invoice for comparison is
+  silently dropped with a note, not summed in. A real fix is a new,
+  generalized fan-out over N invoices per vendor — the same shape of work
+  as the 2-invoice comparison feature, just uncapped and summed instead of
+  diffed.
+- *Cross-vendor questions* ("which vendor owes us the most") — every
+  question resolves to exactly one vendor; there's no ranking or
+  comparison across vendors. This depends on the multi-invoice
+  aggregation above as a prerequisite, plus a new ranked-list response
+  shape nothing in the current UI has a precedent for.
 
 ---
 
 ## Verification
 
-- **Unit/integration tests:** 44 passing (`python3 -m pytest service/tests/ -q`) —
-  compute engine, tax lookup, diff engine, narration guard, and full
-  pipeline end-to-end, run against the deterministic Python layer directly.
+- **Unit/integration tests:** 77 passing (`python3 -m pytest service/tests/ -q`) —
+  compute engine, tax lookup, diff engine, narration guard, UC1/UC2
+  orchestration, and full pipeline end-to-end, run against the
+  deterministic Python layer directly.
 - **Live eval suite, against the hosted deployment (not local, not mocked):**
 
-  **15/15 passed** — [eval/results.md](eval/results.md), generated by [eval/run_eval.py](eval/run_eval.py)
-  run with `N8N_BASE_URL` pointed at the live n8n webhook. Covers all 11
-  Tier-1 cases (partial payment, applied advance, credit note, TDS
-  alongside GST, both sides of the effective-date change, both conflict
-  types, the stale-vendor-rate case, and both GST split types) plus 4
-  adversarial cases (nonexistent vendor, pre-change-date question, a
+  **25/25 passed** — [eval/results.md](eval/results.md), generated by [eval/run_eval.py](eval/run_eval.py)
+  run with `ORCHESTRATOR_BASE_URL` pointed at the live FastAPI service.
+  Covers 11 Tier-1 cases (partial payment, applied advance, credit note,
+  TDS alongside GST, both sides of the effective-date change, both
+  conflict types, the stale-vendor-rate case, and both GST split types),
+  4 adversarial cases (nonexistent vendor, pre-change-date question, a
   false-positive check where the accountant's advice is entirely correct,
-  and a multi-error advice).
+  and a multi-error advice), 4 multi-turn conversational cases (pronoun
+  continuity, topic-change with no false continuity, recency-over-depth,
+  and invoice continuity for the same vendor), 2 vendor-lookup cases,
+  2 draft/unrecorded-invoice cases, and 2 multi-invoice comparison cases.
 
-  One of those 15 is worth being explicit about rather than glossing over:
-  on `A4-multi-error-advice`, the narration guard actually triggered its
-  fallback — Claude's generated prose that run included a number not
-  present in the structured result, the guard caught it, discarded the
-  narration, and served the templated response instead. The *diff itself*
-  (computed independently of any LLM) was still verified correct. This is
-  the safety net working as designed, not a bug — but it's reported
-  honestly here rather than only showing a clean sweep, per the assignment
-  brief's own framing that an understood failure is a stronger signal than
-  a score.
+  Two of those are worth being explicit about rather than glossing over:
+  - The narration guard has been directly observed triggering its
+    fallback in this suite's own testing — a generated sentence included
+    a number not present in the structured result, the guard caught it,
+    discarded the narration, and served the templated response instead.
+    The underlying computed result (independent of any LLM) was still
+    verified correct in every case. This is the safety net working as
+    designed, not a bug.
+  - `M2-topic-change-no-false-continuity` — the suite's own most
+    important multi-turn case, by design (its own note: *"false
+    continuity is worse than missed continuity"*) — failed on two
+    separate live runs before being fixed. A vendor-less follow-up
+    question asked right after a specific-invoice exchange was correctly
+    extracting an empty vendor and the right category (no false
+    continuity — the anti-carryover instructions were working), but the
+    top-level intent classification flipped to "unsupported" only when
+    history was present, refusing an answerable question outright. Root
+    cause: the intent field's own description restricted it to "a
+    specific invoice or transaction," which excluded a category-general
+    question by its own wording. Fixed by correcting that description
+    and adding a code-level backstop (a correctly-populated category
+    signal now overrides a wrongly-classified intent, rather than
+    depending on prompt compliance alone) — verified 25/25 twice locally
+    and again against the live deployment after the fix shipped.
 - **Live end-to-end contract tests, against the hosted deployment:**
-  6/6 passed (`RUN_LIVE_E2E=1 E2E_N8N_BASE_URL=https://ap-agent-n8n.onrender.com
+  6/6 passed (`RUN_LIVE_E2E=1 E2E_ORCHESTRATOR_BASE_URL=https://ap-agent-service.onrender.com
   pytest e2e -v -m live_e2e`) — [e2e/test_live_workflows.py](e2e/test_live_workflows.py). Complements the golden-value
   eval suite above with response-contract checks against the real deployed
-  n8n/Postgres/FastAPI chain: the stale-vendor-rate recomputation, the
+  Postgres/FastAPI stack: the stale-vendor-rate recomputation, the
   effective-date boundary, a correct UC2 advice being accepted, a
   multi-error advice reporting all of its errors, the category-conflict
   refusal blocking validation, and an unknown invoice reference producing a
@@ -296,15 +351,14 @@ within the original timeline.
 
 ## Hosting / running it yourself
 
-Three Render services, deployed from [render.yaml](render.yaml) (a Render Blueprint):
-n8n (orchestration, Docker image, Standard tier — its baseline memory
-footprint genuinely exceeds 512MB even at idle, confirmed via production
-crash logs, not assumed), the FastAPI compute/RAG service (Starter tier —
-512MB is proven sufficient once the tax-document index is pre-built and
-committed rather than rebuilt on every deploy), and Streamlit (Starter
-tier). All three are paid Starter/Standard tier specifically to avoid
-Free tier's 15-minute inactivity spin-down — not because more compute was
-needed beyond n8n's RAM floor.
+Two Render services, deployed from [render.yaml](render.yaml) (a Render Blueprint): the FastAPI
+compute/RAG/orchestration service (`ap-agent-service`, Starter tier — 512MB is proven sufficient
+once the tax-document index is pre-built and committed rather than rebuilt on every deploy), and
+Streamlit (`ap-agent-frontend`, Starter tier). Both are paid Starter tier specifically to avoid Free
+tier's 15-minute inactivity spin-down, not because more compute is needed. (A third service, a
+self-hosted n8n container, existed earlier in this project's life and required the larger Standard
+tier — its baseline memory footprint genuinely exceeded 512MB even at idle, confirmed via
+production crash logs. It's been removed; see the Architecture section above for why.)
 
 To run locally: see `service/requirements.txt` (runtime) vs.
 `service/requirements-ingest.txt` (one-time local tooling for rebuilding
