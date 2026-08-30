@@ -63,6 +63,28 @@ def test_category_conflict_blocks_validation_entirely():
     assert diff.overall_match is False
 
 
+def test_category_mismatch_row_carries_real_string_values_not_none():
+    """Found by an independent recruiter-style evaluation (round 3): the
+    category row's claimed/correct used to be hardcoded to None (typed
+    float-only), which the frontend's pandas.DataFrame silently coerced to
+    NaN, rendering as the literal text "nan" in that table cell -- even
+    though the narrative and reason both stated the real category names
+    correctly. claimed/correct must now carry the actual submitted-vs-
+    invoice category strings."""
+    facts = LedgerFacts(base_amount=50000.00, po_amount=50000.00, receipt_amount=50000.00)
+    tax = TaxDetermination(gst_rate_pct=18.0, tds_rate_pct=0.0, tds_section=None, split_type="CGST_SGST")
+    true_result = compute(facts, tax)
+    advice = {"base_amount": 50000.00, "gst_rate_pct": 18.0, "gst_cgst": 4500.0, "gst_sgst": 4500.0,
+              "tds_amount": 0.0, "net_payable_claimed": 59000.0}
+    diff = diff_advice(true_result, advice,
+                        category_reason="Submitted category 'Furniture' does not match the invoice on file ('Appliances').",
+                        category_claimed="Furniture", category_correct="Appliances")
+    category_field = next(f for f in diff.fields if f.field == "category")
+    assert category_field.claimed == "Furniture"
+    assert category_field.correct == "Appliances"
+    assert category_field.match is False
+
+
 def test_blocked_vendor_flagged_even_when_numbers_match():
     """Found by recruiter-mindset live testing: a numerically-correct advice
     for a blocked vendor must still surface ineligibility -- an accountant

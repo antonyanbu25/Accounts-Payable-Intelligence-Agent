@@ -148,7 +148,8 @@ def do_diff(req: DiffRequest):
         advances_applied=cr.get("advances_applied", 0.0), credits_applied=cr.get("credits_applied", 0.0),
         payments_made=cr.get("payments_made", 0.0),
     )
-    result = diff_advice(tr, req.submitted_advice.model_dump(), category_reason=req.category_reason or "")
+    result = diff_advice(tr, req.submitted_advice.model_dump(), category_reason=req.category_reason or "",
+                          category_claimed=req.category_claimed or "", category_correct=req.category_correct or "")
     return DiffResponse(
         overall_match=result.overall_match, blocked=result.blocked, blocked_reason=result.blocked_reason,
         fields=[FieldDiffModel(field=f.field, claimed=f.claimed, correct=f.correct, match=f.match, reason=f.reason)

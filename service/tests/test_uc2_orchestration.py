@@ -111,6 +111,30 @@ def test_category_conflict_blocks_via_do_compute_args(monkeypatch):
     assert result["diff"]["blocked"] is True
 
 
+def test_category_mismatch_narration_guard_does_not_crash_on_string_value(monkeypatch):
+    """End-to-end regression for the round-3 'nan' fix: the category row's
+    claimed/correct now carry real strings (e.g. "Furniture"), and that list
+    feeds straight into the narration guard's structured_values, which calls
+    float(v) on every entry. do_diff and check_narration_endpoint are
+    deliberately left UNMOCKED here so the real diff.py/narration_guard.py
+    code runs end-to-end, not a stub that would hide a crash."""
+    facts = _facts_uc2(invoice_category="Appliances", po_category="Appliances")
+    monkeypatch.setattr(uc2_orchestration.db, "retrieve_invoice_facts_uc2", lambda invoice_id: facts)
+    monkeypatch.setattr(uc2_orchestration, "tax_lookup", lambda req: _tax_response())
+    monkeypatch.setattr(uc2_orchestration, "do_compute", lambda req: ComputeResponse(
+        base_amount=100000.0, gst={"gst_amount": 18000.0, "cgst": 9000.0, "sgst": 9000.0, "igst": None, "split_type": "CGST_SGST"},
+        tds_amount=10000.0, gross_liability=118000.0, net_disbursement_due=108000.0,
+        pre_tax_ledger_position=100000.0, eligibility="eligible", eligibility_reasons=[], tax_treatment_refused=False))
+    monkeypatch.setattr(uc2_orchestration, "call_text", lambda prompt, max_tokens: "Category mismatch found.")
+
+    result = uc2_orchestration.handle_uc2_validate(1, {"base_amount": 100000.0, "category": "Furniture"})
+
+    category_field = next(f for f in result["diff"]["fields"] if f["field"] == "category")
+    assert category_field["claimed"] == "Furniture"
+    assert category_field["correct"] == "Appliances"
+    assert result["guard"] in ("passed", "failed_fallback_used")  # ran to completion, no crash
+
+
 def test_zero_value_fields_survive_guard_filtering(monkeypatch):
     """A genuine $0 claimed/correct must not be dropped from
     structured_values -- filtering must use `is not None`, never

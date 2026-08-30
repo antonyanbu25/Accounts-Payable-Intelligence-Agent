@@ -114,12 +114,16 @@ def _fallback_verdict_new_invoice(diff) -> str:
 def _guard_values_existing(diff) -> list:
     """Port of CHECK_NARRATION_BODY_EXPR's structured_values construction --
     is not None, never truthiness, so a legitimate $0 claimed/correct
-    survives."""
+    survives. Numeric fields only -- the "category" row's claimed/correct
+    are strings (e.g. "Furniture"), and check_narration()'s float(v) call
+    would raise on one; category names are guarded by narrative-text
+    presence, not this numeral check, so excluding them here is correct,
+    not just a crash workaround."""
     nums = []
     for f in diff.fields:
-        if f.claimed is not None:
+        if isinstance(f.claimed, (int, float)):
             nums.append(f.claimed)
-        if f.correct is not None:
+        if isinstance(f.correct, (int, float)):
             nums.append(f.correct)
     if diff.unapplied_advance_advisory is not None:
         nums.append(diff.unapplied_advance_advisory)
@@ -183,6 +187,7 @@ def _handle_existing_invoice(invoice_id: int, submitted_advice: dict) -> dict:
 
     diff = do_diff(DiffRequest(
         compute_result=computed.model_dump(), submitted_advice=submitted_advice, category_reason=category_reason,
+        category_claimed=advice_category or "", category_correct=facts["invoice_category"] or "",
     ))
 
     prompt = NARRATE_DIFF_PROMPT_PREFIX + json.dumps(diff.model_dump())

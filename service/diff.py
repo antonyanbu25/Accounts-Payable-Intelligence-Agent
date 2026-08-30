@@ -11,7 +11,7 @@ independently, then compare" check rather than a review of the human's
 work.
 """
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 from compute import ComputeResult, r2
 
@@ -21,8 +21,14 @@ TOLERANCE = 1.0  # ±₹1, absorbs rounding-order noise between how the agent an
 @dataclass
 class FieldDiff:
     field: str
-    claimed: Optional[float]
-    correct: Optional[float]
+    # Union[float, str], not just float -- the "category" row (below) is a
+    # genuine string comparison, not a number. Found by an independent
+    # recruiter-style evaluation (round 3): this used to be typed float-only
+    # with the category row's claimed/correct hardcoded to None, which the
+    # frontend's pandas.DataFrame then silently coerced to NaN, rendering as
+    # the literal text "nan" in that table cell.
+    claimed: Optional[Union[float, str]]
+    correct: Optional[Union[float, str]]
     match: bool
     reason: str = ""
 
@@ -68,7 +74,8 @@ def _compare(field_name: str, claimed, correct, reason_if_mismatch: str) -> Fiel
                       reason="" if match else reason_if_mismatch)
 
 
-def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: str = "") -> DiffResult:
+def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: str = "",
+                 category_claimed: str = "", category_correct: str = "") -> DiffResult:
     is_eligible = true_result.eligibility == "eligible"
     eligibility_reasons = [] if is_eligible else (true_result.eligibility_reasons or [true_result.eligibility])
 
@@ -114,7 +121,8 @@ def diff_advice(true_result: ComputeResult, submitted: dict, category_reason: st
                             "Net payable does not match once all fields above are correctly applied."))
 
     if category_reason:
-        fields.append(FieldDiff(field="category", claimed=None, correct=None, match=False, reason=category_reason))
+        fields.append(FieldDiff(field="category", claimed=category_claimed or None, correct=category_correct or None,
+                                 match=False, reason=category_reason))
 
     overall = all(f.match for f in fields)
     return DiffResult(overall_match=overall, fields=fields, eligible=is_eligible,

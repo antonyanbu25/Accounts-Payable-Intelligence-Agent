@@ -1,6 +1,6 @@
 """Pydantic request/response models for the FastAPI service."""
 from datetime import date
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel
 
@@ -89,12 +89,22 @@ class DiffRequest(BaseModel):
     compute_result: dict  # the exact JSON body returned by /compute
     submitted_advice: SubmittedAdvice
     category_reason: Optional[str] = None
+    # The actual submitted-vs-correct category names, populated alongside
+    # category_reason above -- see FieldDiffModel.claimed/.correct below for
+    # why these are needed as real values rather than left as None.
+    category_claimed: Optional[str] = None
+    category_correct: Optional[str] = None
 
 
 class FieldDiffModel(BaseModel):
     field: str
-    claimed: Optional[float] = None
-    correct: Optional[float] = None
+    # Union[float, str], not just float -- the "category" row is a genuine
+    # string comparison. Found by an independent recruiter-style evaluation
+    # (round 3): this was float-only with the category row hardcoded to
+    # None, which the frontend's pandas.DataFrame silently coerced to NaN,
+    # rendering as the literal text "nan" in that table cell.
+    claimed: Optional[Union[float, str]] = None
+    correct: Optional[Union[float, str]] = None
     match: bool
     reason: str = ""
 
