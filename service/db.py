@@ -56,8 +56,41 @@ def get_db_connection():
     of opening a fresh one. Callers MUST release it via
     release_db_connection(conn) when done -- never conn.close(), which
     would destroy the pooled connection outright instead of returning it
-    for reuse, defeating the whole point of pooling."""
-    return _get_db_pool().getconn()
+    for reuse, defeating the whole point of pooling.
+
+    Pre-ping's before returning it -- found live: a pooled connection can go
+    stale/closed server-side (e.g. Postgres's own idle-connection timeout,
+    reached overnight between real requests) without psycopg2 knowing until
+    something actually tries to use it. Without this check, the CALLER's
+    real query is what discovers the connection is dead, surfacing as a
+    real, user-visible failure on whatever request happens to draw the
+    short straw. A cheap SELECT 1 here catches that first, on a connection
+    nothing else depends on yet, and swaps in a fresh one before handing
+    anything back -- at most one extra sub-millisecond round trip on an
+    already-open connection, negligible next to the multi-second handshake
+    cost pooling itself removed. Retries once (covers "the one connection we
+    grabbed happened to be the dead one"); if a second, freshly-opened
+    connection ALSO fails the ping, that's a real outage, not staleness --
+    let it raise so the caller's own error handling sees it, same as
+    before this fix existed. Catches psycopg2.Error broadly (not just
+    OperationalError) -- a connection the SERVER silently dropped raises
+    OperationalError on the next use, but one already marked .closed for
+    some other reason raises InterfaceError instead; both are connection-
+    health failures this ping needs to catch, and since the query here is
+    the fixed, always-valid "SELECT 1", nothing else (a syntax/integrity
+    error) can reach this except clause to be wrongly swallowed by it."""
+    pool = _get_db_pool()
+    last_err = None
+    for _ in range(2):
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return conn
+        except psycopg2.Error as e:
+            last_err = e
+            pool.putconn(conn, close=True)  # discard, don't recycle a dead connection
+    raise last_err
 
 
 def release_db_connection(conn) -> None:
